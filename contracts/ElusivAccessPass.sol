@@ -4,11 +4,14 @@ pragma solidity ^0.8.24;
 import '@openzeppelin/contracts/token/ERC721/ERC721.sol';
 import '@openzeppelin/contracts/access/Ownable.sol';
 import '@openzeppelin/contracts/utils/ReentrancyGuard.sol';
+import '@openzeppelin/contracts/utils/Strings.sol';
 
 /// @title Elusiv Access Pass
 /// @notice An ERC721 token that grants access to Elusiv features.
 /// @dev Implements a paid minting mechanism with a max supply and per-wallet limit.
 contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
+  using Strings for uint256;
+
   uint256 public constant MAX_PER_WALLET = 1;
 
   uint256 public nextTokenId;
@@ -16,10 +19,12 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
   bool public mintingEnabled;
   uint256 public mintPrice;
   address payable public treasury;
+  string public baseTokenURI;
 
   string private constant _name = 'Elusiv Access Pass';
   string private constant _symbol = 'ELSVPASS';
   string private constant _creator = 'Elusiv Labs';
+  string private constant _defaultBaseTokenURI = 'https://elusiv.ai/nftassets/v1/alpha.jpg';
 
   mapping(address => uint256) private _mintedBy;
 
@@ -27,6 +32,7 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
   event MaxSupplyUpdated(uint256 maxSupply, address indexed updater);
   event MintPriceUpdated(uint256 mintPrice, address indexed updater);
   event TreasuryUpdated(address treasury, address indexed updater);
+  event BaseURIUpdated(string baseURI, address indexed updater);
   event PassMinted(address indexed to, uint256 indexed tokenId);
   event FundsWithdrawn(address indexed to, uint256 amount, address indexed executor);
 
@@ -57,11 +63,13 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
     mintingEnabled = initialMintingEnabled;
     mintPrice = initialMintPrice;
     treasury = initialTreasury;
+    baseTokenURI = _defaultBaseTokenURI;
 
     emit MaxSupplyUpdated(initialMaxSupply, msg.sender);
     emit MintingStatusUpdated(initialMintingEnabled, msg.sender);
     emit MintPriceUpdated(initialMintPrice, msg.sender);
     emit TreasuryUpdated(initialTreasury, msg.sender);
+    emit BaseURIUpdated(_defaultBaseTokenURI, msg.sender);
   }
 
   modifier canMint() {
@@ -132,6 +140,13 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
     emit TreasuryUpdated(newTreasury, msg.sender);
   }
 
+  /// @notice Updates the base token URI used for metadata resolution.
+  /// @param newBaseURI The new base URI.
+  function setBaseURI(string calldata newBaseURI) external onlyOwner {
+    baseTokenURI = newBaseURI;
+    emit BaseURIUpdated(newBaseURI, msg.sender);
+  }
+
   /// @notice Withdraws any stray Ether from the contract to the specified address.
   /// @dev Normally funds go directly to treasury during mint, this is for safety.
   /// @param to The recipient address.
@@ -160,6 +175,17 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
   /// @notice Returns the creator string.
   function creator() external pure returns (string memory) {
     return _creator;
+  }
+
+  /// @inheritdoc ERC721
+  function tokenURI(uint256 tokenId) public view override returns (string memory) {
+    _requireOwned(tokenId);
+    if (bytes(baseTokenURI).length == 0) return '';
+    bytes memory uriBytes = bytes(baseTokenURI);
+    if (uriBytes[uriBytes.length - 1] == '/') {
+      return string.concat(baseTokenURI, tokenId.toString());
+    }
+    return baseTokenURI;
   }
 
   receive() external payable {

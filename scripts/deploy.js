@@ -3,7 +3,7 @@ const { ethers } = require('hardhat')
 function getNftConfig() {
   const maxSupplyEnv = process.env.NFT_MAX_SUPPLY || '1000'
   const mintingEnabledEnv = process.env.NFT_MINTING_ENABLED || 'false'
-  const mintPriceEnv = process.env.NFT_MINT_PRICE_WEI || ethers.parseEther('0.01').toString()
+  const mintPriceEnv = process.env.NFT_MINT_PRICE_WEI || ethers.parseEther('0.1').toString()
   const maxSupply = BigInt(maxSupplyEnv)
   const mintingEnabled = mintingEnabledEnv === 'true'
   const mintPrice = BigInt(mintPriceEnv)
