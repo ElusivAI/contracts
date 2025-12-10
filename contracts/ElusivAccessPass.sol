@@ -2,6 +2,8 @@
 pragma solidity ^0.8.24;
 
 import '@openzeppelin/contracts/token/ERC721/ERC721.sol';
+import '@openzeppelin/contracts/token/ERC20/IERC20.sol';
+import '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol';
 import '@openzeppelin/contracts/access/Ownable.sol';
 import '@openzeppelin/contracts/utils/ReentrancyGuard.sol';
 import '@openzeppelin/contracts/utils/Strings.sol';
@@ -10,9 +12,11 @@ import '@openzeppelin/contracts/utils/Strings.sol';
 /// @notice An ERC721 token that grants access to Elusiv features.
 /// @dev Implements a paid minting mechanism with a max supply and per-wallet limit.
 contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
+  using SafeERC20 for IERC20;
   using Strings for uint256;
 
   uint256 public constant MAX_PER_WALLET = 1;
+  uint96 public constant AFFILIATE_FEE_ABSOLUTE_MAX = 5_000; // hard ceiling to protect treasury
 
   uint256 public nextTokenId;
   uint256 public maxSupply;
@@ -21,12 +25,27 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
   address payable public treasury;
   string public baseTokenURI;
 
+  IERC20 public elusivToken;
+  uint96 public maxAffiliateFeeBps;
+  uint96 public defaultAffiliateFeeBps;
+  uint256 public defaultTokenReward;
+  bool public allowSelfReferral;
+  bool public tokenRewardsEnabled;
+
+  struct Promo {
+    address affiliate;
+    uint96 feeBps;
+    uint256 tokenReward;
+    bool active;
+  }
+
   string private constant _name = 'Elusiv Access Pass';
   string private constant _symbol = 'ELSVPASS';
   string private constant _creator = 'Elusiv Labs';
   string private constant _defaultBaseTokenURI = 'https://elusiv.ai/nftassets/v1/alpha.jpg';
 
   mapping(address => uint256) private _mintedBy;
+  mapping(bytes32 => Promo) private _promos;
 
   event MintingStatusUpdated(bool enabled, address indexed updater);
   event MaxSupplyUpdated(uint256 maxSupply, address indexed updater);
@@ -35,6 +54,25 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
   event BaseURIUpdated(string baseURI, address indexed updater);
   event PassMinted(address indexed to, uint256 indexed tokenId);
   event FundsWithdrawn(address indexed to, uint256 amount, address indexed executor);
+  event AffiliateSettingsUpdated(
+    uint96 maxAffiliateFeeBps,
+    uint96 defaultAffiliateFeeBps,
+    uint256 defaultTokenReward,
+    address elusivToken,
+    bool allowSelfReferral,
+    bool tokenRewardsEnabled,
+    address indexed updater
+  );
+  event PromoCreated(bytes32 indexed code, address indexed affiliate, uint96 feeBps, uint256 tokenReward);
+  event PromoUpdated(bytes32 indexed code, address indexed affiliate, uint96 feeBps, uint256 tokenReward, bool active);
+  event PromoDisabled(bytes32 indexed code);
+  event PromoUsed(
+    bytes32 indexed code,
+    address indexed buyer,
+    address indexed affiliate,
+    uint256 affiliateEth,
+    uint256 tokenReward
+  );
 
   error MintClosed();
   error SoldOut();
@@ -43,6 +81,13 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
   error MintPriceRequired();
   error IncorrectMintPayment();
   error EtherNotAccepted();
+  error InvalidPromoCode();
+  error AffiliateFeeTooHigh();
+  error SelfReferralNotAllowed();
+  error TokenRewardsUnavailable();
+  error InvalidRewardToken();
+  error PromoAlreadyExists();
+  error PromoRequiresPass();
 
   /// @notice Initializes the access pass contract.
   /// @param initialMaxSupply The maximum number of tokens that can ever be minted.
@@ -64,12 +109,26 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
     mintPrice = initialMintPrice;
     treasury = initialTreasury;
     baseTokenURI = _defaultBaseTokenURI;
+    maxAffiliateFeeBps = 1_000; // 10% default ceiling
+    defaultAffiliateFeeBps = 1_000;
+    defaultTokenReward = 0;
+    allowSelfReferral = false;
+    tokenRewardsEnabled = true;
 
     emit MaxSupplyUpdated(initialMaxSupply, msg.sender);
     emit MintingStatusUpdated(initialMintingEnabled, msg.sender);
     emit MintPriceUpdated(initialMintPrice, msg.sender);
     emit TreasuryUpdated(initialTreasury, msg.sender);
     emit BaseURIUpdated(_defaultBaseTokenURI, msg.sender);
+    emit AffiliateSettingsUpdated(
+      maxAffiliateFeeBps,
+      defaultAffiliateFeeBps,
+      defaultTokenReward,
+      address(0),
+      allowSelfReferral,
+      tokenRewardsEnabled,
+      msg.sender
+    );
   }
 
   modifier canMint() {
@@ -86,10 +145,19 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
 
   /// @notice Public function to mint a pass by paying the mint price.
   /// @dev Checks mint limits and transfers value to treasury.
+  function publicMint(bytes32 promoCode) external payable canMint nonReentrant {
+    _publicMint(promoCode);
+  }
+
+  /// @notice Backwards-compatible public mint without a promo code.
   function publicMint() external payable canMint nonReentrant {
+    _publicMint(bytes32(0));
+  }
+
+  function _publicMint(bytes32 promoCode) internal {
     if (_mintedBy[msg.sender] >= MAX_PER_WALLET) revert MintLimitReached();
     _mintedBy[msg.sender] += 1; // effects before interactions
-    _collectMintPayment(); // checks payment and forwards value
+    _distributeMintPayment(promoCode); // checks payment and forwards value
     _mintPass(msg.sender);
   }
 
@@ -101,11 +169,38 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
     emit PassMinted(to, tokenId);
   }
 
-  function _collectMintPayment() internal {
+  function _distributeMintPayment(bytes32 promoCode) internal {
     if (mintPrice == 0) revert MintPriceRequired();
     if (msg.value != mintPrice) revert IncorrectMintPayment();
-    (bool sent, ) = treasury.call{ value: msg.value }('');
-    require(sent, 'Treasury transfer failed');
+
+    uint256 affiliateAmount;
+    uint256 tokenReward;
+    address affiliate;
+
+    if (promoCode != bytes32(0)) {
+      Promo memory promo = _promos[promoCode];
+      if (!promo.active || promo.affiliate == address(0)) revert InvalidPromoCode();
+      if (!allowSelfReferral && promo.affiliate == msg.sender) revert SelfReferralNotAllowed();
+      affiliateAmount = (msg.value * promo.feeBps) / 10_000;
+      tokenReward = promo.tokenReward;
+      affiliate = promo.affiliate;
+
+      if (affiliateAmount > 0) {
+        (bool sentAffiliate, ) = payable(affiliate).call{ value: affiliateAmount }('');
+        require(sentAffiliate, 'Affiliate transfer failed');
+      }
+
+      if (tokenRewardsEnabled && tokenReward > 0 && address(elusivToken) != address(0)) {
+        if (elusivToken.balanceOf(address(this)) < tokenReward) revert TokenRewardsUnavailable();
+        elusivToken.safeTransfer(affiliate, tokenReward);
+      }
+
+      emit PromoUsed(promoCode, msg.sender, affiliate, affiliateAmount, tokenReward);
+    }
+
+    uint256 treasuryAmount = msg.value - affiliateAmount;
+    (bool sentTreasury, ) = treasury.call{ value: treasuryAmount }('');
+    require(sentTreasury, 'Treasury transfer failed');
   }
 
   /// @notice Enables or disables public minting.
@@ -138,6 +233,101 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
     if (newTreasury == address(0)) revert InvalidTreasury();
     treasury = newTreasury;
     emit TreasuryUpdated(newTreasury, msg.sender);
+  }
+
+  /// @notice Updates affiliate-related settings.
+  /// @param newMaxAffiliateFeeBps Maximum fee split allowed for promos (in bps).
+  /// @param newDefaultAffiliateFeeBps Default fee bps for holder-created promos.
+  /// @param newDefaultTokenReward Default token reward for new promos.
+  /// @param tokenAddress ERC20 token address for rewards (set zero address to disable).
+  /// @param selfReferralAllowed Whether buyer can be the affiliate.
+  /// @param rewardsEnabled Whether token rewards are enabled.
+  function setAffiliateSettings(
+    uint96 newMaxAffiliateFeeBps,
+    uint96 newDefaultAffiliateFeeBps,
+    uint256 newDefaultTokenReward,
+    address tokenAddress,
+    bool selfReferralAllowed,
+    bool rewardsEnabled
+  ) external onlyOwner {
+    if (newMaxAffiliateFeeBps > AFFILIATE_FEE_ABSOLUTE_MAX) revert AffiliateFeeTooHigh();
+    if (newDefaultAffiliateFeeBps > newMaxAffiliateFeeBps) revert AffiliateFeeTooHigh();
+    if (rewardsEnabled && tokenAddress == address(0)) revert InvalidRewardToken();
+    maxAffiliateFeeBps = newMaxAffiliateFeeBps;
+    defaultAffiliateFeeBps = newDefaultAffiliateFeeBps;
+    defaultTokenReward = newDefaultTokenReward;
+    elusivToken = IERC20(tokenAddress);
+    allowSelfReferral = selfReferralAllowed;
+    tokenRewardsEnabled = rewardsEnabled;
+    emit AffiliateSettingsUpdated(
+      newMaxAffiliateFeeBps,
+      newDefaultAffiliateFeeBps,
+      newDefaultTokenReward,
+      tokenAddress,
+      selfReferralAllowed,
+      rewardsEnabled,
+      msg.sender
+    );
+  }
+
+  /// @notice Creates or updates a promo code configuration.
+  /// @param code The promo code (bytes32, recommend hashing normalized string).
+  /// @param affiliate The affiliate address receiving rewards.
+  /// @param feeBps Affiliate share in basis points.
+  /// @param tokenReward Token reward per mint for this promo.
+  /// @param active Whether the promo is active.
+  function setPromoCode(bytes32 code, address affiliate, uint96 feeBps, uint256 tokenReward, bool active) external onlyOwner {
+    _setPromoCode(code, affiliate, feeBps, tokenReward, active);
+  }
+
+  /// @notice Creates or updates a promo code using the default token reward value.
+  /// @param code The promo code (bytes32, recommend hashing normalized string).
+  /// @param affiliate The affiliate address receiving rewards.
+  /// @param feeBps Affiliate share in basis points.
+  /// @param active Whether the promo is active.
+  function setPromoCodeWithDefault(bytes32 code, address affiliate, uint96 feeBps, bool active) external onlyOwner {
+    _setPromoCode(code, affiliate, feeBps, defaultTokenReward, active);
+  }
+
+  /// @notice Allows an access pass holder to register their own promo code once.
+  /// @param codeString The human-readable code (recommended uppercase). Hashed with keccak256.
+  function registerPromoCode(string calldata codeString) external {
+    if (balanceOf(msg.sender) == 0) revert PromoRequiresPass();
+    bytes memory raw = bytes(codeString);
+    if (raw.length == 0) revert InvalidPromoCode();
+    bytes32 code = keccak256(raw);
+    if (_promos[code].affiliate != address(0)) revert PromoAlreadyExists();
+    _setPromoCode(code, msg.sender, defaultAffiliateFeeBps, defaultTokenReward, true);
+  }
+
+  function _setPromoCode(bytes32 code, address affiliate, uint96 feeBps, uint256 tokenReward, bool active) internal {
+    if (code == bytes32(0)) revert InvalidPromoCode();
+    if (affiliate == address(0)) revert InvalidPromoCode();
+    if (feeBps > maxAffiliateFeeBps || feeBps > AFFILIATE_FEE_ABSOLUTE_MAX) revert AffiliateFeeTooHigh();
+
+    bool existed = _promos[code].affiliate != address(0);
+    _promos[code] = Promo({ affiliate: affiliate, feeBps: feeBps, tokenReward: tokenReward, active: active });
+
+    if (existed) {
+      emit PromoUpdated(code, affiliate, feeBps, tokenReward, active);
+    } else {
+      emit PromoCreated(code, affiliate, feeBps, tokenReward);
+    }
+  }
+
+  /// @notice Disables a promo code.
+  /// @param code The promo code to disable.
+  function disablePromoCode(bytes32 code) external onlyOwner {
+    Promo storage promo = _promos[code];
+    if (promo.affiliate == address(0)) revert InvalidPromoCode();
+    promo.active = false;
+    emit PromoDisabled(code);
+  }
+
+  /// @notice Returns the details of a promo code.
+  /// @param code The promo code.
+  function getPromoCode(bytes32 code) external view returns (Promo memory) {
+    return _promos[code];
   }
 
   /// @notice Updates the base token URI used for metadata resolution.

@@ -18,6 +18,29 @@ function getResearchConfig(ethers) {
   return { requestCost: ethers.parseUnits(costTokens, 18), maxQueryLength: Number(maxQueryLenEnv) || 512 }
 }
 
+function getAffiliateConfig() {
+  const maxAffiliateFeeBps = Number(process.env.AFFILIATE_MAX_FEE_BPS || 1000)
+  const defaultAffiliateFeeBps = Number(process.env.AFFILIATE_DEFAULT_FEE_BPS || maxAffiliateFeeBps)
+  const defaultTokenReward = process.env.AFFILIATE_DEFAULT_TOKEN_REWARD || '0'
+  const allowSelfReferral = (process.env.AFFILIATE_ALLOW_SELF_REFERRAL || 'false').toLowerCase() === 'true'
+  const rewardsEnabled = (process.env.AFFILIATE_REWARDS_ENABLED || 'true').toLowerCase() === 'true'
+  const seedCode = process.env.AFFILIATE_SEED_CODE || ''
+  const seedAffiliate = process.env.AFFILIATE_SEED_WALLET || ''
+  const seedFeeBps = Number(process.env.AFFILIATE_SEED_FEE_BPS || maxAffiliateFeeBps)
+  const seedTokenReward = process.env.AFFILIATE_SEED_TOKEN_REWARD || defaultTokenReward
+  return {
+    maxAffiliateFeeBps,
+    defaultAffiliateFeeBps,
+    defaultTokenReward: BigInt(defaultTokenReward),
+    allowSelfReferral,
+    rewardsEnabled,
+    seedCode,
+    seedAffiliate,
+    seedFeeBps,
+    seedTokenReward: BigInt(seedTokenReward)
+  }
+}
+
 async function main() {
   const hre = require('hardhat')
   const { ethers, network, run } = hre
@@ -45,6 +68,31 @@ async function main() {
   await pass.waitForDeployment()
   const passAddress = await pass.getAddress()
   console.log('ElusivAccessPass deployed at:', passAddress)
+
+  const affiliateConfig = getAffiliateConfig()
+  const affiliateTx = await pass.setAffiliateSettings(
+    affiliateConfig.maxAffiliateFeeBps,
+    affiliateConfig.defaultAffiliateFeeBps,
+    affiliateConfig.defaultTokenReward,
+    tokenAddress,
+    affiliateConfig.allowSelfReferral,
+    affiliateConfig.rewardsEnabled
+  )
+  await affiliateTx.wait()
+  console.log('Configured affiliate settings')
+
+  if (affiliateConfig.seedCode && affiliateConfig.seedAffiliate) {
+    const codeHash = ethers.keccak256(ethers.toUtf8Bytes(affiliateConfig.seedCode.toUpperCase()))
+    const seedTx = await pass.setPromoCode(
+      codeHash,
+      affiliateConfig.seedAffiliate,
+      affiliateConfig.seedFeeBps,
+      affiliateConfig.seedTokenReward,
+      true
+    )
+    await seedTx.wait()
+    console.log('Seed promo code created:', affiliateConfig.seedCode, 'hash:', codeHash)
+  }
 
   const researchConfig = getResearchConfig(ethers)
   const Desk = await ethers.getContractFactory('ElusivResearchDesk')

@@ -33,6 +33,29 @@ function getResearchConfig() {
   return { requestCost: ethers.parseUnits(costTokens, 18), maxQueryLength: Number(maxQueryLenEnv) || 512 }
 }
 
+function getAffiliateConfig() {
+  const maxAffiliateFeeBps = Number(process.env.AFFILIATE_MAX_FEE_BPS || 1000)
+  const defaultAffiliateFeeBps = Number(process.env.AFFILIATE_DEFAULT_FEE_BPS || maxAffiliateFeeBps)
+  const defaultTokenReward = process.env.AFFILIATE_DEFAULT_TOKEN_REWARD || '0'
+  const allowSelfReferral = (process.env.AFFILIATE_ALLOW_SELF_REFERRAL || 'false').toLowerCase() === 'true'
+  const rewardsEnabled = (process.env.AFFILIATE_REWARDS_ENABLED || 'true').toLowerCase() === 'true'
+  const seedCode = process.env.AFFILIATE_SEED_CODE || ''
+  const seedAffiliate = process.env.AFFILIATE_SEED_WALLET || ''
+  const seedFeeBps = Number(process.env.AFFILIATE_SEED_FEE_BPS || maxAffiliateFeeBps)
+  const seedTokenReward = process.env.AFFILIATE_SEED_TOKEN_REWARD || defaultTokenReward
+  return {
+    maxAffiliateFeeBps,
+    defaultAffiliateFeeBps,
+    defaultTokenReward: BigInt(defaultTokenReward),
+    allowSelfReferral,
+    rewardsEnabled,
+    seedCode,
+    seedAffiliate,
+    seedFeeBps,
+    seedTokenReward: BigInt(seedTokenReward)
+  }
+}
+
 async function signAndSendTx({ provider, eth, from, to, data, chainId, confirmations = 2 }) {
   const nonce = await provider.getTransactionCount(from)
   const feeData = await provider.getFeeData()
@@ -105,6 +128,43 @@ async function main() {
   const passReceipt = dryRun ? null : await signAndSendCreationTx({ provider, eth, from, data: passDeployTx.data, chainId, confirmations })
   const passAddress = dryRun ? '(dry-run)' : passReceipt.contractAddress
   console.log('ElusivAccessPass:', passAddress)
+
+  const affiliateConfig = getAffiliateConfig()
+  if (dryRun) {
+    console.log(
+      'DRY RUN - Would set affiliate settings',
+      JSON.stringify(
+        { maxAffiliateFeeBps: affiliateConfig.maxAffiliateFeeBps, defaultTokenReward: affiliateConfig.defaultTokenReward, allowSelfReferral: affiliateConfig.allowSelfReferral },
+        null,
+        2
+      )
+    )
+  } else {
+    const passInterface = PassFactory.interface
+    const setAffiliateData = passInterface.encodeFunctionData('setAffiliateSettings', [
+      affiliateConfig.maxAffiliateFeeBps,
+      affiliateConfig.defaultAffiliateFeeBps,
+      affiliateConfig.defaultTokenReward,
+      tokenAddress,
+      affiliateConfig.allowSelfReferral,
+      affiliateConfig.rewardsEnabled
+    ])
+    const affiliateReceipt = await signAndSendTx({ provider, eth, from, to: passAddress, data: setAffiliateData, chainId, confirmations })
+    console.log('Affiliate settings tx:', affiliateReceipt.hash)
+
+    if (affiliateConfig.seedCode && affiliateConfig.seedAffiliate) {
+      const codeHash = ethers.keccak256(ethers.toUtf8Bytes(affiliateConfig.seedCode.toUpperCase()))
+      const setPromoData = passInterface.encodeFunctionData('setPromoCode', [
+        codeHash,
+        affiliateConfig.seedAffiliate,
+        affiliateConfig.seedFeeBps,
+        affiliateConfig.seedTokenReward,
+        true
+      ])
+      const promoReceipt = await signAndSendTx({ provider, eth, from, to: passAddress, data: setPromoData, chainId, confirmations })
+      console.log('Seed promo code tx:', promoReceipt.hash, 'code:', affiliateConfig.seedCode, 'hash:', codeHash)
+    }
+  }
 
   const researchConfig = getResearchConfig()
   const tokenAddressForDesk = dryRun ? from : tokenAddress
