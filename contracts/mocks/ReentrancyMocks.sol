@@ -47,3 +47,7 @@ contract ReenteringToken is ERC20 {
     return ok;
   }
 }
+
+
+
+

@@ -5,6 +5,9 @@
   "scripts": {
     "test": "hardhat test",
     "compile": "hardhat compile",
+    "node": "hardhat node",
+    "deploy:local": "hardhat run scripts/deploy-local.js --network localhost",
+    "deploy:seed": "hardhat run scripts/seed.js --network localhost",
     "deploy:sepolia": "hardhat run scripts/deploy-testnet.js --network sepolia",
     "verify:sepolia": "hardhat verify --network sepolia",
     "deploy:simple": "RPC_URL=\"$RPC_URL\" PRIVATE_KEY=\"$PRIVATE_KEY\" node scripts/deploy-simple.js",

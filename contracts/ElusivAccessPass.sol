@@ -15,7 +15,7 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
   using SafeERC20 for IERC20;
   using Strings for uint256;
 
-  uint256 public constant MAX_PER_WALLET = 1;
+  uint256 public constant MAX_PER_WALLET = type(uint256).max; // No limit per wallet
   uint96 public constant AFFILIATE_FEE_ABSOLUTE_MAX = 5_000; // hard ceiling to protect treasury
 
   uint256 public nextTokenId;
@@ -155,8 +155,7 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
   }
 
   function _publicMint(bytes32 promoCode) internal {
-    if (_mintedBy[msg.sender] >= MAX_PER_WALLET) revert MintLimitReached();
-    _mintedBy[msg.sender] += 1; // effects before interactions
+    _mintedBy[msg.sender] += 1; // Track mints per wallet (no limit enforced)
     _distributeMintPayment(promoCode); // checks payment and forwards value
     _mintPass(msg.sender);
   }
