@@ -6,7 +6,7 @@ Smart contracts for the Elusiv access pass, ERC‑20 research credit, and on-cha
 
 - `ElusivToken.sol` – fixed-supply ERC‑20 (`ELUSIV`) minted once to a designated treasury.
 - `ElusivAccessPass.sol` – ERC‑721 access pass with per-wallet mint limits, paid minting, and configurable treasury.
-- `ElusivResearchDesk.sol` – ELUSIV-backed research request queue with bounded queries and efficient pending lookups.
+- `ElusivResearchDesk.sol` – ELUSIV-backed research request queue with bounded queries, efficient pending lookups, and user-driven completion workflow with approval system.
 
 ## Requirements
 
@@ -60,7 +60,9 @@ Before production, double-check:
 
 - The ELUSIV supply is minted once to `TOKEN_TREASURY`. Secure this key or transfer ownership to a multisig.
 - Access pass minting enforces per-wallet caps and paid entry; adjust pricing and supply carefully.
-- Research desk enforces bounded query lengths and SafeERC20 flows but still relies on owner review to fulfill requests.
+- Research desk enforces bounded query lengths and SafeERC20 flows. Supports two completion workflows:
+  - **Owner completion**: Contract owner can complete requests directly (backward compatible)
+  - **User completion**: Any user can submit document completions; original requester must approve before tokens are transferred to the resolver
 - For vulnerabilities, please reach out privately before public disclosure.
 
 

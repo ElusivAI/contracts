@@ -90,6 +90,269 @@ describe('Elusiv suite', function () {
       .withArgs(owner.address, cost)
   })
 
+  it('allows users to submit completions for research requests', async function () {
+    const [owner, requester, resolver] = await ethers.getSigners()
+    const Token = await ethers.getContractFactory('ElusivToken')
+    const token = await Token.deploy(owner.address)
+    await token.waitForDeployment()
+    const decimalsMultiplier = 10n ** 18n
+    await token.transfer(requester.address, 1_000n * decimalsMultiplier)
+
+    const cost = 25n * decimalsMultiplier
+    const Desk = await ethers.getContractFactory('ElusivResearchDesk')
+    const desk = await Desk.deploy(await token.getAddress(), cost, 256)
+    await desk.waitForDeployment()
+
+    await token.connect(requester).approve(await desk.getAddress(), cost)
+    await desk.connect(requester).requestResearch('Research quantum computing applications')
+    
+    const documentHash = '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef'
+    
+    await expect(desk.connect(resolver).submitCompletion(0, documentHash))
+      .to.emit(desk, 'CompletionSubmitted')
+      .withArgs(0, resolver.address, documentHash)
+
+    const request = await desk.getRequest(0)
+    expect(request.resolver).to.equal(resolver.address)
+    expect(request.documentHash).to.equal(documentHash)
+    expect(request.pendingApproval).to.equal(true)
+    expect(request.fulfilled).to.equal(false)
+    expect(request.submittedAt).to.be.gt(0)
+  })
+
+  it('allows requester to approve completion and transfer tokens', async function () {
+    const [owner, requester, resolver] = await ethers.getSigners()
+    const Token = await ethers.getContractFactory('ElusivToken')
+    const token = await Token.deploy(owner.address)
+    await token.waitForDeployment()
+    const decimalsMultiplier = 10n ** 18n
+    await token.transfer(requester.address, 1_000n * decimalsMultiplier)
+
+    const cost = 25n * decimalsMultiplier
+    const Desk = await ethers.getContractFactory('ElusivResearchDesk')
+    const desk = await Desk.deploy(await token.getAddress(), cost, 256)
+    await desk.waitForDeployment()
+
+    await token.connect(requester).approve(await desk.getAddress(), cost)
+    await desk.connect(requester).requestResearch('Research quantum computing')
+    
+    const resolverBalanceBefore = await token.balanceOf(resolver.address)
+    const documentHash = '0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890'
+    
+    await desk.connect(resolver).submitCompletion(0, documentHash)
+    
+    await expect(desk.connect(requester).approveCompletion(0))
+      .to.emit(desk, 'CompletionApproved')
+      .withArgs(0, resolver.address, cost)
+      .and.to.emit(desk, 'RequestCompleted')
+      .withArgs(0, documentHash, resolver.address)
+
+    const request = await desk.getRequest(0)
+    expect(request.fulfilled).to.equal(true)
+    expect(request.pendingApproval).to.equal(false)
+    expect(request.response).to.equal(documentHash)
+    
+    const resolverBalanceAfter = await token.balanceOf(resolver.address)
+    expect(resolverBalanceAfter - resolverBalanceBefore).to.equal(cost)
+    
+    const pending = await desk.getPendingRequests()
+    expect(pending).to.have.lengthOf(0)
+  })
+
+  it('allows requester to reject completion', async function () {
+    const [owner, requester, resolver] = await ethers.getSigners()
+    const Token = await ethers.getContractFactory('ElusivToken')
+    const token = await Token.deploy(owner.address)
+    await token.waitForDeployment()
+    const decimalsMultiplier = 10n ** 18n
+    await token.transfer(requester.address, 1_000n * decimalsMultiplier)
+
+    const cost = 25n * decimalsMultiplier
+    const Desk = await ethers.getContractFactory('ElusivResearchDesk')
+    const desk = await Desk.deploy(await token.getAddress(), cost, 256)
+    await desk.waitForDeployment()
+
+    await token.connect(requester).approve(await desk.getAddress(), cost)
+    await desk.connect(requester).requestResearch('Research topic')
+    
+    const documentHash = '0x1111111111111111111111111111111111111111111111111111111111111111'
+    await desk.connect(resolver).submitCompletion(0, documentHash)
+    
+    await expect(desk.connect(requester).rejectCompletion(0))
+      .to.emit(desk, 'CompletionRejected')
+      .withArgs(0, requester.address)
+
+    const request = await desk.getRequest(0)
+    expect(request.fulfilled).to.equal(false)
+    expect(request.pendingApproval).to.equal(false)
+    expect(request.resolver).to.equal(ethers.ZeroAddress)
+    expect(request.documentHash).to.equal('')
+    expect(request.submittedAt).to.equal(0)
+    
+    const pending = await desk.getPendingRequests()
+    expect(pending).to.have.lengthOf(1)
+  })
+
+  it('prevents non-requester from approving completion', async function () {
+    const [owner, requester, resolver, other] = await ethers.getSigners()
+    const Token = await ethers.getContractFactory('ElusivToken')
+    const token = await Token.deploy(owner.address)
+    await token.waitForDeployment()
+    const decimalsMultiplier = 10n ** 18n
+    await token.transfer(requester.address, 1_000n * decimalsMultiplier)
+
+    const cost = 25n * decimalsMultiplier
+    const Desk = await ethers.getContractFactory('ElusivResearchDesk')
+    const desk = await Desk.deploy(await token.getAddress(), cost, 256)
+    await desk.waitForDeployment()
+
+    await token.connect(requester).approve(await desk.getAddress(), cost)
+    await desk.connect(requester).requestResearch('Research topic')
+    
+    await desk.connect(resolver).submitCompletion(0, '0x1234')
+    
+    await expect(desk.connect(other).approveCompletion(0))
+      .to.be.revertedWithCustomError(desk, 'NotRequester')
+    
+    await expect(desk.connect(resolver).approveCompletion(0))
+      .to.be.revertedWithCustomError(desk, 'NotRequester')
+  })
+
+  it('prevents non-requester from rejecting completion', async function () {
+    const [owner, requester, resolver, other] = await ethers.getSigners()
+    const Token = await ethers.getContractFactory('ElusivToken')
+    const token = await Token.deploy(owner.address)
+    await token.waitForDeployment()
+    const decimalsMultiplier = 10n ** 18n
+    await token.transfer(requester.address, 1_000n * decimalsMultiplier)
+
+    const cost = 25n * decimalsMultiplier
+    const Desk = await ethers.getContractFactory('ElusivResearchDesk')
+    const desk = await Desk.deploy(await token.getAddress(), cost, 256)
+    await desk.waitForDeployment()
+
+    await token.connect(requester).approve(await desk.getAddress(), cost)
+    await desk.connect(requester).requestResearch('Research topic')
+    
+    await desk.connect(resolver).submitCompletion(0, '0x1234')
+    
+    await expect(desk.connect(other).rejectCompletion(0))
+      .to.be.revertedWithCustomError(desk, 'NotRequester')
+  })
+
+  it('prevents submitting completion for fulfilled request', async function () {
+    const [owner, requester, resolver] = await ethers.getSigners()
+    const Token = await ethers.getContractFactory('ElusivToken')
+    const token = await Token.deploy(owner.address)
+    await token.waitForDeployment()
+    const decimalsMultiplier = 10n ** 18n
+    await token.transfer(requester.address, 1_000n * decimalsMultiplier)
+
+    const cost = 25n * decimalsMultiplier
+    const Desk = await ethers.getContractFactory('ElusivResearchDesk')
+    const desk = await Desk.deploy(await token.getAddress(), cost, 256)
+    await desk.waitForDeployment()
+
+    await token.connect(requester).approve(await desk.getAddress(), cost)
+    await desk.connect(requester).requestResearch('Research topic')
+    
+    await desk.connect(resolver).submitCompletion(0, '0x1234')
+    await desk.connect(requester).approveCompletion(0)
+    
+    await expect(desk.connect(resolver).submitCompletion(0, '0x5678'))
+      .to.be.revertedWithCustomError(desk, 'AlreadyFulfilled')
+  })
+
+  it('prevents submitting completion when one is already pending', async function () {
+    const [owner, requester, resolver1, resolver2] = await ethers.getSigners()
+    const Token = await ethers.getContractFactory('ElusivToken')
+    const token = await Token.deploy(owner.address)
+    await token.waitForDeployment()
+    const decimalsMultiplier = 10n ** 18n
+    await token.transfer(requester.address, 1_000n * decimalsMultiplier)
+
+    const cost = 25n * decimalsMultiplier
+    const Desk = await ethers.getContractFactory('ElusivResearchDesk')
+    const desk = await Desk.deploy(await token.getAddress(), cost, 256)
+    await desk.waitForDeployment()
+
+    await token.connect(requester).approve(await desk.getAddress(), cost)
+    await desk.connect(requester).requestResearch('Research topic')
+    
+    await desk.connect(resolver1).submitCompletion(0, '0x1111')
+    
+    await expect(desk.connect(resolver2).submitCompletion(0, '0x2222'))
+      .to.be.revertedWithCustomError(desk, 'CompletionAlreadyPending')
+  })
+
+  it('allows new completion after rejection', async function () {
+    const [owner, requester, resolver1, resolver2] = await ethers.getSigners()
+    const Token = await ethers.getContractFactory('ElusivToken')
+    const token = await Token.deploy(owner.address)
+    await token.waitForDeployment()
+    const decimalsMultiplier = 10n ** 18n
+    await token.transfer(requester.address, 1_000n * decimalsMultiplier)
+
+    const cost = 25n * decimalsMultiplier
+    const Desk = await ethers.getContractFactory('ElusivResearchDesk')
+    const desk = await Desk.deploy(await token.getAddress(), cost, 256)
+    await desk.waitForDeployment()
+
+    await token.connect(requester).approve(await desk.getAddress(), cost)
+    await desk.connect(requester).requestResearch('Research topic')
+    
+    await desk.connect(resolver1).submitCompletion(0, '0x1111')
+    await desk.connect(requester).rejectCompletion(0)
+    
+    await expect(desk.connect(resolver2).submitCompletion(0, '0x2222'))
+      .to.emit(desk, 'CompletionSubmitted')
+      .withArgs(0, resolver2.address, '0x2222')
+    
+    const request = await desk.getRequest(0)
+    expect(request.resolver).to.equal(resolver2.address)
+    expect(request.documentHash).to.equal('0x2222')
+    expect(request.pendingApproval).to.equal(true)
+  })
+
+  it('returns pending approvals for requester', async function () {
+    const [owner, requester1, requester2, resolver] = await ethers.getSigners()
+    const Token = await ethers.getContractFactory('ElusivToken')
+    const token = await Token.deploy(owner.address)
+    await token.waitForDeployment()
+    const decimalsMultiplier = 10n ** 18n
+    await token.transfer(requester1.address, 1_000n * decimalsMultiplier)
+    await token.transfer(requester2.address, 1_000n * decimalsMultiplier)
+
+    const cost = 25n * decimalsMultiplier
+    const Desk = await ethers.getContractFactory('ElusivResearchDesk')
+    const desk = await Desk.deploy(await token.getAddress(), cost, 256)
+    await desk.waitForDeployment()
+
+    await token.connect(requester1).approve(await desk.getAddress(), cost * 2n)
+    await token.connect(requester2).approve(await desk.getAddress(), cost)
+    
+    await desk.connect(requester1).requestResearch('Request 1')
+    await desk.connect(requester1).requestResearch('Request 2')
+    await desk.connect(requester2).requestResearch('Request 3')
+    
+    await desk.connect(resolver).submitCompletion(0, '0x1111')
+    await desk.connect(resolver).submitCompletion(1, '0x2222')
+    
+    const pendingApprovals1 = await desk.getPendingApprovals(requester1.address)
+    expect(pendingApprovals1).to.have.lengthOf(2)
+    expect(pendingApprovals1[0].query).to.equal('Request 1')
+    expect(pendingApprovals1[1].query).to.equal('Request 2')
+    
+    const pendingApprovals2 = await desk.getPendingApprovals(requester2.address)
+    expect(pendingApprovals2).to.have.lengthOf(0)
+    
+    await desk.connect(requester1).approveCompletion(0)
+    
+    const pendingApprovals1After = await desk.getPendingApprovals(requester1.address)
+    expect(pendingApprovals1After).to.have.lengthOf(1)
+    expect(pendingApprovals1After[0].query).to.equal('Request 2')
+  })
+
   it('prevents reentrancy during access pass publicMint', async function () {
     const [owner] = await ethers.getSigners()
     const Pass = await ethers.getContractFactory('ElusivAccessPass')

@@ -22,6 +22,10 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
     uint256 createdAt;
     uint256 updatedAt;
     bool fulfilled;
+    address resolver;
+    string documentHash;
+    bool pendingApproval;
+    uint256 submittedAt;
   }
 
   IERC20 public immutable elusivToken;
@@ -38,9 +42,16 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
   event RequestCompleted(uint256 indexed requestId, string response, address indexed resolver);
   event RequestCostUpdated(uint256 newCost, address indexed updater);
   event FundsWithdrawn(address indexed to, uint256 amount);
+  event CompletionSubmitted(uint256 indexed requestId, address indexed resolver, string documentHash);
+  event CompletionApproved(uint256 indexed requestId, address indexed resolver, uint256 payment);
+  event CompletionRejected(uint256 indexed requestId, address indexed requester);
 
   error InvalidRequest();
   error InvalidRequester();
+  error NotRequester();
+  error NoPendingCompletion();
+  error AlreadyFulfilled();
+  error CompletionAlreadyPending();
 
   /// @notice Initializes the research desk.
   /// @param tokenAddress The ELUSIV token contract address.
@@ -82,7 +93,11 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
         payment: cost,
         createdAt: block.timestamp,
         updatedAt: block.timestamp,
-        fulfilled: false
+        fulfilled: false,
+        resolver: address(0),
+        documentHash: '',
+        pendingApproval: false,
+        submittedAt: 0
       })
     );
     _trackPending(requestId, requester);
@@ -91,17 +106,77 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
     elusivToken.safeTransferFrom(requester, address(this), cost);
   }
 
-  /// @notice Mark a request as complete with a response.
+  /// @notice Mark a request as complete with a response (owner-only, for backward compatibility).
   /// @param requestId The ID of the request to complete.
   /// @param response The answer or link to the research.
   function completeRequest(uint256 requestId, string calldata response) external onlyOwner {
     ResearchRequest storage req = _getRequest(requestId);
-    require(!req.fulfilled, 'Already fulfilled');
+    if (req.fulfilled) revert AlreadyFulfilled();
     req.fulfilled = true;
     req.response = response;
     req.updatedAt = block.timestamp;
+    if (req.resolver == address(0)) {
+      req.resolver = msg.sender;
+    }
     _untrackPending(requestId, req.requester);
-    emit RequestCompleted(requestId, response, msg.sender);
+    emit RequestCompleted(requestId, response, req.resolver);
+  }
+
+  /// @notice Submit a completion for a research request by uploading a document.
+  /// @dev Any address can submit a completion for an open request.
+  /// @param requestId The ID of the request to complete.
+  /// @param documentHash The hash or identifier of the uploaded document.
+  function submitCompletion(uint256 requestId, string calldata documentHash) external {
+    ResearchRequest storage req = _getRequest(requestId);
+    if (req.fulfilled) revert AlreadyFulfilled();
+    if (req.pendingApproval) revert CompletionAlreadyPending();
+    
+    req.resolver = msg.sender;
+    req.documentHash = documentHash;
+    req.pendingApproval = true;
+    req.submittedAt = block.timestamp;
+    req.updatedAt = block.timestamp;
+    
+    emit CompletionSubmitted(requestId, msg.sender, documentHash);
+  }
+
+  /// @notice Approve a submitted completion and transfer payment to resolver.
+  /// @dev Only the original requester can approve.
+  /// @param requestId The ID of the request to approve.
+  function approveCompletion(uint256 requestId) external nonReentrant {
+    ResearchRequest storage req = _getRequest(requestId);
+    if (req.requester != msg.sender) revert NotRequester();
+    if (!req.pendingApproval) revert NoPendingCompletion();
+    if (req.fulfilled) revert AlreadyFulfilled();
+    
+    req.fulfilled = true;
+    req.pendingApproval = false;
+    req.response = req.documentHash;
+    req.updatedAt = block.timestamp;
+    
+    _untrackPending(requestId, req.requester);
+    
+    elusivToken.safeTransfer(req.resolver, req.payment);
+    
+    emit CompletionApproved(requestId, req.resolver, req.payment);
+    emit RequestCompleted(requestId, req.documentHash, req.resolver);
+  }
+
+  /// @notice Reject a submitted completion, allowing new submissions.
+  /// @dev Only the original requester can reject.
+  /// @param requestId The ID of the request to reject.
+  function rejectCompletion(uint256 requestId) external {
+    ResearchRequest storage req = _getRequest(requestId);
+    if (req.requester != msg.sender) revert NotRequester();
+    if (!req.pendingApproval) revert NoPendingCompletion();
+    
+    req.resolver = address(0);
+    req.documentHash = '';
+    req.pendingApproval = false;
+    req.submittedAt = 0;
+    req.updatedAt = block.timestamp;
+    
+    emit CompletionRejected(requestId, msg.sender);
   }
 
   /// @notice Returns the total number of requests made.
@@ -150,6 +225,29 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
     pending = new ResearchRequest[](length);
     for (uint256 i = 0; i < length; i++) {
       pending[i] = _requests[ids[i]];
+    }
+  }
+
+  /// @notice Returns all requests awaiting approval from a specific requester.
+  /// @param requester The requester address.
+  function getPendingApprovals(address requester) external view returns (ResearchRequest[] memory pending) {
+    if (requester == address(0)) revert InvalidRequester();
+    uint256[] storage ids = _pendingByUser[requester];
+    uint256 count = 0;
+    
+    for (uint256 i = 0; i < ids.length; i++) {
+      if (_requests[ids[i]].pendingApproval) {
+        count++;
+      }
+    }
+    
+    pending = new ResearchRequest[](count);
+    uint256 index = 0;
+    for (uint256 i = 0; i < ids.length; i++) {
+      if (_requests[ids[i]].pendingApproval) {
+        pending[index] = _requests[ids[i]];
+        index++;
+      }
     }
   }
 
