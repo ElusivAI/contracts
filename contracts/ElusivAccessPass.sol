@@ -40,7 +40,7 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
   }
 
   string private constant _name = 'Elusiv Access Pass';
-  string private constant _symbol = 'ELSVPASS';
+  string private constant _symbol = 'ELUSIVPASS';
   string private constant _creator = 'Elusiv Labs';
   string private constant _defaultBaseTokenURI = 'https://elusiv.ai/nftassets/v1/alpha.jpg';
 
