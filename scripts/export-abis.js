@@ -33,7 +33,7 @@ function writeAbi(name) {
 }
 
 function main() {
-  const names = ['ElusivToken', 'ElusivAccessPass', 'ElusivResearchDesk']
+  const names = ['ElusivToken', 'ElusivAccessPass', 'ElusivResearchDesk', 'ElusivContributionDesk', 'ElusivCommunityPool']
   if (outDirs.length === 0) {
     console.warn('No ABI output directories found. Skipping export.')
     return

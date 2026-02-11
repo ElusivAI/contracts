@@ -52,6 +52,7 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
   error NoPendingCompletion();
   error AlreadyFulfilled();
   error CompletionAlreadyPending();
+  error ExceedsWithdrawable();
 
   /// @notice Initializes the research desk.
   /// @param tokenAddress The ELUSIV token contract address.
@@ -107,6 +108,7 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
   }
 
   /// @notice Mark a request as complete with a response (owner-only, for backward compatibility).
+  /// @dev Admin resolution: no token transfer to resolver; payment remains in the contract. Use approveCompletion for user-driven completions that pay the resolver.
   /// @param requestId The ID of the request to complete.
   /// @param response The answer or link to the research.
   function completeRequest(uint256 requestId, string calldata response) external onlyOwner {
@@ -123,7 +125,7 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
   }
 
   /// @notice Submit a completion for a research request by uploading a document.
-  /// @dev Any address can submit a completion for an open request.
+  /// @dev Any address can submit a completion for an open request. Requester must approve or reject; griefing (spam submissions) is possible and costs the requester gas to reject.
   /// @param requestId The ID of the request to complete.
   /// @param documentHash The hash or identifier of the uploaded document.
   function submitCompletion(uint256 requestId, string calldata documentHash) external {
@@ -252,12 +254,29 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
   }
 
   /// @notice Withdraws tokens from the contract to a recipient.
+  /// @dev Cannot withdraw more than balance minus reserved amount for unfulfilled requests.
   /// @param to The recipient address.
   /// @param amount The amount of tokens to withdraw.
   function withdraw(address to, uint256 amount) external onlyOwner nonReentrant {
     require(to != address(0), 'Invalid recipient');
+    uint256 balance = elusivToken.balanceOf(address(this));
+    uint256 reserved = _reservedBalance();
+    if (amount > balance - reserved) revert ExceedsWithdrawable();
     elusivToken.safeTransfer(to, amount);
     emit FundsWithdrawn(to, amount);
+  }
+
+  /// @notice Returns the token balance reserved for unfulfilled request payments.
+  function reservedBalance() external view returns (uint256) {
+    return _reservedBalance();
+  }
+
+  function _reservedBalance() internal view returns (uint256 reserved) {
+    for (uint256 i = 0; i < _requests.length; i++) {
+      if (!_requests[i].fulfilled) {
+        reserved += _requests[i].payment;
+      }
+    }
   }
 
   function _trackPending(uint256 requestId, address requester) internal {

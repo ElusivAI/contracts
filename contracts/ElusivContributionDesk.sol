@@ -76,6 +76,7 @@ contract ElusivContributionDesk is Ownable, ReentrancyGuard {
   mapping(uint256 => mapping(address => ValidatorVote)) private _validatorVotes;
   mapping(uint256 => mapping(address => uint256)) private _validatorVoteTimestamps;
   mapping(uint256 => address[]) private _contributionValidators;
+  mapping(uint256 => bool) private _rewardClaimed;
   uint256 private _nextValidatorIndex;
 
   event ContributionSubmitted(
@@ -116,6 +117,9 @@ contract ElusivContributionDesk is Ownable, ReentrancyGuard {
   error PoolInsufficientBalance();
   error InvalidPoolAddress();
   error ContributionAlreadyFinalized();
+  error RewardAlreadyClaimed();
+  error RewardUnavailable();
+  error NotContributor();
 
   /// @notice Initializes the contribution desk.
   /// @param tokenAddress The ELUSIV token contract address.
@@ -186,7 +190,7 @@ contract ElusivContributionDesk is Ownable, ReentrancyGuard {
   /// @notice Validator votes on a contribution.
   /// @param contributionId The ID of the contribution.
   /// @param approve True to approve, false to reject.
-  function validatorVote(uint256 contributionId, bool approve) external {
+  function validatorVote(uint256 contributionId, bool approve) external nonReentrant {
     IndependentContribution storage contrib = _getContribution(contributionId);
     
     if (contrib.status != ContributionStatus.UnderReview) {
@@ -273,6 +277,7 @@ contract ElusivContributionDesk is Ownable, ReentrancyGuard {
   }
 
   /// @notice Set the community pool address.
+  /// @dev Pool must be funded for approved contributions to receive rewards at finalization; otherwise use claimReward once the pool has balance.
   /// @param pool The community pool contract address.
   function setCommunityPool(address pool) external onlyOwner {
     if (pool == address(0)) revert InvalidPoolAddress();
@@ -293,6 +298,30 @@ contract ElusivContributionDesk is Ownable, ReentrancyGuard {
   function getPoolBalance() external view returns (uint256 balance) {
     if (communityPool == address(0)) return 0;
     return elusivToken.balanceOf(communityPool);
+  }
+
+  /// @notice Claim reward for an approved contribution when pool was underfunded at finalization.
+  /// @param contributionId The contribution ID.
+  function claimReward(uint256 contributionId) external nonReentrant {
+    IndependentContribution storage contrib = _getContribution(contributionId);
+    if (contrib.status != ContributionStatus.Approved) revert ContributionNotUnderReview();
+    if (msg.sender != contrib.contributor) revert NotContributor();
+    if (_rewardClaimed[contributionId]) revert RewardAlreadyClaimed();
+    if (contrib.rewardAmount == 0) revert RewardUnavailable();
+    if (communityPool == address(0)) revert InvalidPoolAddress();
+    uint256 poolBalance = elusivToken.balanceOf(communityPool);
+    if (poolBalance < contrib.rewardAmount) revert RewardUnavailable();
+
+    _rewardClaimed[contributionId] = true;
+    contributorStats[contrib.contributor] += contrib.rewardAmount;
+    ICommunityPool(communityPool).withdraw(contrib.contributor, contrib.rewardAmount);
+    emit RewardDistributed(contributionId, contrib.contributor, contrib.rewardAmount);
+  }
+
+  /// @notice Returns whether the reward for a contribution has been claimed or distributed.
+  function isRewardClaimed(uint256 contributionId) external view returns (bool) {
+    if (contributionId >= _contributions.length) return false;
+    return _rewardClaimed[contributionId];
   }
 
   /// @notice Get contributor statistics.
@@ -448,6 +477,7 @@ contract ElusivContributionDesk is Ownable, ReentrancyGuard {
       if (contrib.rewardAmount > 0 && communityPool != address(0)) {
         uint256 poolBalance = elusivToken.balanceOf(communityPool);
         if (poolBalance >= contrib.rewardAmount) {
+          _rewardClaimed[contributionId] = true;
           contributorStats[contrib.contributor] += contrib.rewardAmount;
           ICommunityPool(communityPool).withdraw(contrib.contributor, contrib.rewardAmount);
           emit RewardDistributed(contributionId, contrib.contributor, contrib.rewardAmount);

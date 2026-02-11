@@ -19,7 +19,7 @@ describe('Elusiv suite', function () {
     const mintPrice = ethers.parseEther('0.01')
     const pass = await Pass.deploy(2n, true, mintPrice, owner.address)
     await pass.waitForDeployment()
-    await pass.connect(user).publicMint({ value: mintPrice })
+    await pass.connect(user).getFunction('publicMint()')({ value: mintPrice })
     expect(await pass.balanceOf(user.address)).to.equal(1n)
     expect(await pass.creator()).to.equal('Elusiv Labs')
   })
@@ -31,18 +31,18 @@ describe('Elusiv suite', function () {
     const pass = await Pass.deploy(2n, true, mintPrice, owner.address)
     await pass.waitForDeployment()
 
-    await pass.connect(user).publicMint({ value: mintPrice })
-    await expect(pass.connect(user).publicMint({ value: mintPrice })).to.be.revertedWithCustomError(pass, 'MintLimitReached')
+    await pass.connect(user).getFunction('publicMint()')({ value: mintPrice })
+    await expect(pass.connect(user).getFunction('publicMint()')({ value: mintPrice })).to.be.revertedWithCustomError(pass, 'MintLimitReached')
 
     await pass.setMaxSupply(3n)
     await pass.setMintingEnabled(false)
-    await expect(pass.connect(other).publicMint({ value: mintPrice })).to.be.revertedWithCustomError(pass, 'MintClosed')
+    await expect(pass.connect(other).getFunction('publicMint()')({ value: mintPrice })).to.be.revertedWithCustomError(pass, 'MintClosed')
 
     await pass.mint(owner.address)
     expect(await pass.balanceOf(owner.address)).to.equal(1n)
 
     await pass.setMintingEnabled(true)
-    await pass.connect(other).publicMint({ value: mintPrice })
+    await pass.connect(other).getFunction('publicMint()')({ value: mintPrice })
     expect(await pass.nextTokenId()).to.equal(3n)
   })
 
@@ -88,6 +88,27 @@ describe('Elusiv suite', function () {
     await expect(desk.withdraw(owner.address, cost))
       .to.emit(desk, 'FundsWithdrawn')
       .withArgs(owner.address, cost)
+  })
+
+  it('restricts owner withdraw to non-reserved balance', async function () {
+    const [owner, user] = await ethers.getSigners()
+    const Token = await ethers.getContractFactory('ElusivToken')
+    const token = await Token.deploy(owner.address)
+    await token.waitForDeployment()
+    const decimalsMultiplier = 10n ** 18n
+    await token.transfer(user.address, 1_000n * decimalsMultiplier)
+    const cost = 25n * decimalsMultiplier
+    const Desk = await ethers.getContractFactory('ElusivResearchDesk')
+    const desk = await Desk.deploy(await token.getAddress(), cost, 256)
+    await desk.waitForDeployment()
+    await token.connect(user).approve(await desk.getAddress(), cost)
+    await desk.connect(user).requestResearch('Open request')
+    expect(await desk.reservedBalance()).to.equal(cost)
+    await expect(desk.withdraw(owner.address, cost)).to.be.revertedWithCustomError(desk, 'ExceedsWithdrawable')
+    await expect(desk.withdraw(owner.address, 1n)).to.be.revertedWithCustomError(desk, 'ExceedsWithdrawable')
+    await desk.completeRequest(0, 'Done')
+    expect(await desk.reservedBalance()).to.equal(0)
+    await expect(desk.withdraw(owner.address, cost)).to.emit(desk, 'FundsWithdrawn').withArgs(owner.address, cost)
   })
 
   it('allows users to submit completions for research requests', async function () {
@@ -366,7 +387,7 @@ describe('Elusiv suite', function () {
 
     await pass.setTreasury(maliciousTreasury.getAddress())
     // Reentrancy attempt causes the inner call to revert, bubbling as a failed treasury transfer
-    await expect(pass.publicMint({ value: mintPrice })).to.be.revertedWith('Treasury transfer failed')
+    await expect(pass.getFunction('publicMint()')({ value: mintPrice })).to.be.revertedWith('Treasury transfer failed')
     expect(await pass.nextTokenId()).to.equal(0n)
   })
 

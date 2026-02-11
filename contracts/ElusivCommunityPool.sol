@@ -22,6 +22,7 @@ contract ElusivCommunityPool is Ownable, ReentrancyGuard {
   error InvalidAddress();
   error NotAuthorized();
   error InsufficientBalance();
+  error InvalidAmount();
   error ContributionDeskNotSet();
 
   /// @notice Initializes the community pool.
@@ -56,7 +57,7 @@ contract ElusivCommunityPool is Ownable, ReentrancyGuard {
       revert NotAuthorized();
     }
     if (to == address(0)) revert InvalidAddress();
-    if (amount == 0) revert InsufficientBalance();
+    if (amount == 0) revert InvalidAmount();
 
     uint256 balance = elusivToken.balanceOf(address(this));
     if (balance < amount) revert InsufficientBalance();
@@ -72,11 +73,12 @@ contract ElusivCommunityPool is Ownable, ReentrancyGuard {
   }
 
   /// @notice Emergency withdrawal by owner (for safety).
+  /// @dev Use only in emergencies; restrict owner to a trusted multisig or governance.
   /// @param to The recipient address.
   /// @param amount The amount to withdraw.
   function emergencyWithdraw(address to, uint256 amount) external onlyOwner nonReentrant {
     if (to == address(0)) revert InvalidAddress();
-    if (amount == 0) revert InsufficientBalance();
+    if (amount == 0) revert InvalidAmount();
 
     uint256 balance = elusivToken.balanceOf(address(this));
     if (balance < amount) revert InsufficientBalance();

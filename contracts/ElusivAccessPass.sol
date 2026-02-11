@@ -15,7 +15,7 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
   using SafeERC20 for IERC20;
   using Strings for uint256;
 
-  uint256 public constant MAX_PER_WALLET = type(uint256).max; // No limit per wallet
+  uint256 public constant MAX_PER_WALLET = 1;
   uint96 public constant AFFILIATE_FEE_ABSOLUTE_MAX = 5_000; // hard ceiling to protect treasury
 
   uint256 public nextTokenId;
@@ -155,8 +155,9 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
   }
 
   function _publicMint(bytes32 promoCode) internal {
-    _mintedBy[msg.sender] += 1; // Track mints per wallet (no limit enforced)
-    _distributeMintPayment(promoCode); // checks payment and forwards value
+    if (_mintedBy[msg.sender] >= MAX_PER_WALLET) revert MintLimitReached();
+    _mintedBy[msg.sender] += 1;
+    _distributeMintPayment(promoCode);
     _mintPass(msg.sender);
   }
 
@@ -235,6 +236,7 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
   }
 
   /// @notice Updates affiliate-related settings.
+  /// @dev When rewardsEnabled is false, tokenAddress may be zero. Contract must hold enough ELUSIV for active promos or mints with token rewards will revert with TokenRewardsUnavailable. Affiliate is paid first; a reverting affiliate contract can DoS the mint.
   /// @param newMaxAffiliateFeeBps Maximum fee split allowed for promos (in bps).
   /// @param newDefaultAffiliateFeeBps Default fee bps for holder-created promos.
   /// @param newDefaultTokenReward Default token reward for new promos.
@@ -324,6 +326,7 @@ contract ElusivAccessPass is ERC721, Ownable, ReentrancyGuard {
   }
 
   /// @notice Returns the details of a promo code.
+  /// @dev Treat affiliate == address(0) as "no promo" for unknown or disabled codes.
   /// @param code The promo code.
   function getPromoCode(bytes32 code) external view returns (Promo memory) {
     return _promos[code];

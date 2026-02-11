@@ -329,6 +329,14 @@ describe('ElusivContributionDesk', function () {
       
       const contributorBalance = await token.balanceOf(contributor.address)
       expect(contributorBalance).to.equal(0)
+
+      expect(await desk.isRewardClaimed(0)).to.equal(false)
+      await token.transfer(await pool.getAddress(), 500n * decimalsMultiplier)
+      await expect(desk.connect(other).claimReward(0)).to.be.revertedWithCustomError(desk, 'NotContributor')
+      await expect(desk.connect(contributor).claimReward(0)).to.emit(desk, 'RewardDistributed').withArgs(0, contributor.address, 100n * decimalsMultiplier)
+      expect(await desk.isRewardClaimed(0)).to.equal(true)
+      expect(await token.balanceOf(contributor.address)).to.equal(100n * decimalsMultiplier)
+      await expect(desk.connect(contributor).claimReward(0)).to.be.revertedWithCustomError(desk, 'RewardAlreadyClaimed')
     })
   })
 

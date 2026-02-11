@@ -56,9 +56,14 @@ Before production, double-check:
 - Ownership of each contract is transferred to hardened governance.
 - ABI exports (`node scripts/export-abis.js`) are run after changes for downstream consumers.
 
+## Documentation
+
+- **CONTRACT_REVIEW.md** — Security and correctness review with findings and implemented fixes.
+- **CONTRACT_NOTES.md** — Integration and behavior notes (treasury, affiliates, pool funding, admin resolution, griefing).
+
 ## Security & Disclosure
 
-- The ELUSIV supply is minted once to `TOKEN_TREASURY`. Secure this key or transfer ownership to a multisig.
+- The ELUSIV supply is minted once to `TOKEN_TREASURY`. Secure this key (treasury must accept ERC20; see CONTRACT_NOTES.md).
 - Access pass minting enforces per-wallet caps and paid entry; adjust pricing and supply carefully.
 - Research desk enforces bounded query lengths and SafeERC20 flows. Supports two completion workflows:
   - **Owner completion**: Contract owner can complete requests directly (backward compatible)

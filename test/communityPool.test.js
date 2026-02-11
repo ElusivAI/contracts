@@ -119,7 +119,7 @@ describe('ElusivCommunityPool', function () {
 
     it('should reject zero amount withdrawal', async function () {
       await expect(pool.connect(owner).withdraw(contributor.address, 0))
-        .to.be.revertedWithCustomError(pool, 'InsufficientBalance')
+        .to.be.revertedWithCustomError(pool, 'InvalidAmount')
     })
 
     it('should reject withdrawal exceeding balance', async function () {
