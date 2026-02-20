@@ -17,6 +17,7 @@ contract ElusivCommunityPool is Ownable, ReentrancyGuard {
 
   event Deposit(address indexed depositor, uint256 amount);
   event Withdrawal(address indexed to, uint256 amount, address indexed executor);
+  event EmergencyWithdrawal(address indexed token, address indexed to, uint256 amount, address indexed executor);
   event ContributionDeskUpdated(address indexed newDesk);
 
   error InvalidAddress();
@@ -74,16 +75,29 @@ contract ElusivCommunityPool is Ownable, ReentrancyGuard {
 
   /// @notice Emergency withdrawal by owner (for safety).
   /// @dev Use only in emergencies; restrict owner to a trusted multisig or governance.
+  ///      Allows withdrawal of any ERC-20 token or ETH (when token is address(0)),
+  ///      useful for recovering tokens or ETH sent by accident.
+  /// @param token The ERC-20 token contract address to withdraw, or address(0) for ETH.
   /// @param to The recipient address.
-  /// @param amount The amount to withdraw.
-  function emergencyWithdraw(address to, uint256 amount) external onlyOwner nonReentrant {
+  /// @param amount The amount of tokens or ETH to withdraw.
+  function emergencyWithdraw(address token, address to, uint256 amount) external onlyOwner nonReentrant {
     if (to == address(0)) revert InvalidAddress();
     if (amount == 0) revert InvalidAmount();
 
-    uint256 balance = elusivToken.balanceOf(address(this));
-    if (balance < amount) revert InsufficientBalance();
+    if (token == address(0)) {
+      // Withdraw ETH
+      uint256 balance = address(this).balance;
+      if (balance < amount) revert InsufficientBalance();
+      (bool success, ) = payable(to).call{ value: amount }('');
+      require(success, 'ETH transfer failed');
+    } else {
+      // Withdraw ERC-20 token
+      IERC20 tokenContract = IERC20(token);
+      uint256 balance = tokenContract.balanceOf(address(this));
+      if (balance < amount) revert InsufficientBalance();
+      tokenContract.safeTransfer(to, amount);
+    }
 
-    elusivToken.safeTransfer(to, amount);
-    emit Withdrawal(to, amount, msg.sender);
+    emit EmergencyWithdrawal(token, to, amount, msg.sender);
   }
 }
