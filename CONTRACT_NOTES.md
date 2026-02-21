@@ -26,4 +26,4 @@ Reference for deployers and integrators. See `CONTRACT_REVIEW.md` for the full s
 
 ## ElusivCommunityPool
 
-- **emergencyWithdraw:** Owner can withdraw any amount. Intended for emergencies only; keep the owner as a trusted multisig or governance contract.
+- **emergencyWithdraw(token, to, amount):** Owner can withdraw any ERC-20 token or ETH (pass address(0) for ETH). Intended for emergencies and recovering accidentally sent tokens; keep the owner as a trusted multisig or governance contract.

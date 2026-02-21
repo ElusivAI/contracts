@@ -114,7 +114,7 @@ Holds ELUSIV; only the configured contribution desk (or owner) can withdraw. Use
 | Severity | Issue | Recommendation |
 |----------|--------|----------------|
 | **Low** | **`withdraw` allows `amount == 0` to revert with `InsufficientBalance`** — The revert message says “InsufficientBalance” but the check is `amount == 0`. | Use a dedicated error (e.g. `InvalidAmount`) or require `amount > 0` with a clearer message. |
-| **Info** | **`emergencyWithdraw`** — Owner can withdraw any amount; use for emergencies only. | Document and restrict to trusted owner. |
+| **Info** | **`emergencyWithdraw(token, to, amount)`** — Owner can withdraw any ERC-20 token or ETH (token = address(0)); use for emergencies and recovering accidentally sent tokens. | Document and restrict to trusted owner. |
 
 ### Positive
 - Withdraw restricted to `contributionDesk` or `owner`.
@@ -138,7 +138,7 @@ Holds ELUSIV; only the configured contribution desk (or owner) can withdraw. Use
 2. **ResearchDesk** — **DONE:** Added `_reservedBalance()` and `reservedBalance()` view; `withdraw` reverts with `ExceedsWithdrawable` if amount exceeds balance minus reserved.
 3. **ContributionDesk** — **DONE:** Added `_rewardClaimed`, `claimReward(contributionId)`, and `isRewardClaimed(contributionId)` so contributors can claim when pool was underfunded at finalization.
 4. **ContributionDesk** — **DONE:** Added `nonReentrant` to `validatorVote`.
-5. **CommunityPool** — **DONE:** Added `InvalidAmount`; `withdraw` and `emergencyWithdraw` revert with it when `amount == 0`.
+5. **CommunityPool** — **DONE:** Added `InvalidAmount`; `withdraw` and `emergencyWithdraw` revert with it when `amount == 0`. `emergencyWithdraw(token, to, amount)` supports any ERC-20 or ETH (token = address(0)).
 
 ---
 

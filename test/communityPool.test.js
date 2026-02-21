@@ -179,16 +179,25 @@ describe('ElusivCommunityPool', function () {
     })
 
     it('should allow owner to emergency withdraw ETH', async function () {
-      // Send some ETH to the pool (via selfdestruct or direct transfer if payable)
-      // For testing, we'll assume ETH is already in the contract
-      const ethAmount = ethers.parseEther('1')
+      const ethAmount = ethers.parseEther('0.5')
+      const poolAddress = await pool.getAddress()
       const balanceBefore = await ethers.provider.getBalance(other.address)
-      
-      // Note: This test assumes ETH is already in the contract
-      // In a real scenario, you'd need to send ETH first
-      await expect(pool.connect(owner).emergencyWithdraw(ethers.ZeroAddress, other.address, ethAmount))
+
+      const ForceSendEth = await ethers.getContractFactory('ForceSendEth')
+      const forceSend = await ForceSendEth.deploy()
+      await forceSend.waitForDeployment()
+      await forceSend.destroy(poolAddress, { value: ethAmount })
+
+      expect(await ethers.provider.getBalance(poolAddress)).to.equal(ethAmount)
+
+      await expect(
+        pool.connect(owner).emergencyWithdraw(ethers.ZeroAddress, other.address, ethAmount)
+      )
         .to.emit(pool, 'EmergencyWithdrawal')
         .withArgs(ethers.ZeroAddress, other.address, ethAmount, owner.address)
+
+      expect(await ethers.provider.getBalance(poolAddress)).to.equal(0)
+      expect((await ethers.provider.getBalance(other.address)) - balanceBefore).to.equal(ethAmount)
     })
 
     it('should prevent non-owner from emergency withdrawal', async function () {
@@ -203,10 +212,10 @@ describe('ElusivCommunityPool', function () {
         .to.be.revertedWithCustomError(pool, 'InvalidAddress')
     })
 
-    it('should reject emergency withdrawal with zero token address when withdrawing tokens', async function () {
-      // This test checks that address(0) is only valid for ETH, but we need to handle this case
-      // Actually, address(0) is valid for ETH, so this test might not be needed
-      // But we can test that invalid token addresses revert
+    it('should reject emergency withdraw ETH when insufficient balance', async function () {
+      await expect(
+        pool.connect(owner).emergencyWithdraw(ethers.ZeroAddress, other.address, ethers.parseEther('1'))
+      ).to.be.revertedWithCustomError(pool, 'InsufficientBalance')
     })
   })
 
