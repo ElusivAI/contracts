@@ -324,6 +324,12 @@ describe('Elusiv suite', function () {
     
     await desk.connect(resolver1).submitCompletion(0, '0x1111')
     await desk.connect(requester).rejectCompletion(0)
+
+    await expect(desk.connect(resolver2).submitCompletion(0, '0x2222'))
+      .to.be.revertedWithCustomError(desk, 'CooldownActive')
+
+    await ethers.provider.send('evm_increaseTime', [3601])
+    await ethers.provider.send('evm_mine', [])
     
     await expect(desk.connect(resolver2).submitCompletion(0, '0x2222'))
       .to.emit(desk, 'CompletionSubmitted')

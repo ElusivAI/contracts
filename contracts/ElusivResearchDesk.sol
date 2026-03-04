@@ -35,6 +35,7 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
   uint256[] private _openRequestIds;
 
   mapping(uint256 => uint256) private _openRequestIndex;
+  mapping(uint256 => uint256) private _rejectionTimestamp;
   mapping(address => uint256[]) private _pendingByUser;
   mapping(address => mapping(uint256 => uint256)) private _pendingIndexByUser;
 
@@ -53,6 +54,9 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
   error AlreadyFulfilled();
   error CompletionAlreadyPending();
   error ExceedsWithdrawable();
+  error CooldownActive();
+
+  uint256 public constant COMPLETION_REJECTION_COOLDOWN = 1 hours;
 
   /// @notice Initializes the research desk.
   /// @param tokenAddress The ELUSIV token contract address.
@@ -125,13 +129,16 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
   }
 
   /// @notice Submit a completion for a research request by uploading a document.
-  /// @dev Any address can submit a completion for an open request. Requester must approve or reject; griefing (spam submissions) is possible and costs the requester gas to reject.
+  /// @dev Any address can submit a completion for an open request. After a rejection, a cooldown applies before another completion can be submitted for the same request.
   /// @param requestId The ID of the request to complete.
   /// @param documentHash The hash or identifier of the uploaded document.
   function submitCompletion(uint256 requestId, string calldata documentHash) external {
     ResearchRequest storage req = _getRequest(requestId);
     if (req.fulfilled) revert AlreadyFulfilled();
     if (req.pendingApproval) revert CompletionAlreadyPending();
+    if (_rejectionTimestamp[requestId] != 0 && block.timestamp < _rejectionTimestamp[requestId] + COMPLETION_REJECTION_COOLDOWN) {
+      revert CooldownActive();
+    }
     
     req.resolver = msg.sender;
     req.documentHash = documentHash;
@@ -172,6 +179,7 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
     if (req.requester != msg.sender) revert NotRequester();
     if (!req.pendingApproval) revert NoPendingCompletion();
     
+    _rejectionTimestamp[requestId] = block.timestamp;
     req.resolver = address(0);
     req.documentHash = '';
     req.pendingApproval = false;
@@ -272,10 +280,8 @@ contract ElusivResearchDesk is Ownable, ReentrancyGuard {
   }
 
   function _reservedBalance() internal view returns (uint256 reserved) {
-    for (uint256 i = 0; i < _requests.length; i++) {
-      if (!_requests[i].fulfilled) {
-        reserved += _requests[i].payment;
-      }
+    for (uint256 i = 0; i < _openRequestIds.length; i++) {
+      reserved += _requests[_openRequestIds[i]].payment;
     }
   }
 

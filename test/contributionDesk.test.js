@@ -95,6 +95,11 @@ describe('ElusivContributionDesk', function () {
       expect(await desk.minValidatorsRequired()).to.equal(4)
     })
 
+    it('should revert when min validators exceeds max validators', async function () {
+      await expect(desk.setMinValidatorsRequired(6))
+        .to.be.revertedWith('Min exceeds max validators')
+    })
+
     it('should allow owner to update review period', async function () {
       const newPeriod = 14 * 24 * 60 * 60
       await expect(desk.setReviewPeriod(newPeriod))
@@ -503,13 +508,26 @@ describe('ElusivContributionDesk', function () {
 
       await desk.connect(validator1).validatorVote(0, true)
       await desk.connect(validator2).validatorVote(0, true)
-      await desk.connect(validator3).validatorVote(0, true)
+      await desk.connect(validator3).validatorVote(0, false)
 
       await time.increase(reviewPeriod + 1)
-
       await desk.finalizeContribution(0)
       await expect(desk.finalizeContribution(0))
         .to.be.revertedWithCustomError(desk, 'ContributionNotUnderReview')
+    })
+
+    it('should allow owner to force-finalize when validators are unavailable', async function () {
+      await desk.connect(contributor).submitContribution('Force finalize', '0xabcd', 'desc', 100n * decimalsMultiplier)
+      await token.transfer(await pool.getAddress(), 1000n * decimalsMultiplier)
+
+      await expect(desk.connect(owner).forceFinalize(0, true))
+        .to.emit(desk, 'ContributionFinalized')
+        .withArgs(0, true, 100n * decimalsMultiplier)
+        .and.to.emit(pool, 'Withdrawal')
+        .withArgs(contributor.address, 100n * decimalsMultiplier, await desk.getAddress())
+
+      const contrib = await desk.getContribution(0)
+      expect(contrib.status).to.equal(2)
     })
   })
 })

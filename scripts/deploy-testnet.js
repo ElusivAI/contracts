@@ -18,6 +18,13 @@ function getResearchConfig(ethers) {
   return { requestCost: ethers.parseUnits(costTokens, 18), maxQueryLength: Number(maxQueryLenEnv) || 512 }
 }
 
+function getContributionDeskConfig() {
+  const reviewPeriod = process.env.REVIEW_PERIOD || '604800'
+  const minValidators = process.env.MIN_VALIDATORS || '3'
+  const maxValidators = process.env.MAX_VALIDATORS || '5'
+  return { reviewPeriod, minValidators, maxValidators }
+}
+
 function getAffiliateConfig() {
   const maxAffiliateFeeBps = Number(process.env.AFFILIATE_MAX_FEE_BPS || 1000)
   const defaultAffiliateFeeBps = Number(process.env.AFFILIATE_DEFAULT_FEE_BPS || maxAffiliateFeeBps)
@@ -101,7 +108,23 @@ async function main() {
   const deskAddress = await desk.getAddress()
   console.log('ElusivResearchDesk deployed at:', deskAddress)
 
-  // Optional: wait a couple of blocks before verify
+  const Pool = await ethers.getContractFactory('ElusivCommunityPool')
+  const pool = await Pool.deploy(tokenAddress)
+  await pool.waitForDeployment()
+  const poolAddress = await pool.getAddress()
+  console.log('ElusivCommunityPool deployed at:', poolAddress)
+
+  const contribConfig = getContributionDeskConfig()
+  const ContribDesk = await ethers.getContractFactory('ElusivContributionDesk')
+  const contribDesk = await ContribDesk.deploy(tokenAddress, contribConfig.reviewPeriod, contribConfig.minValidators, contribConfig.maxValidators)
+  await contribDesk.waitForDeployment()
+  const contribDeskAddress = await contribDesk.getAddress()
+  console.log('ElusivContributionDesk deployed at:', contribDeskAddress)
+
+  await pool.setContributionDesk(contribDeskAddress)
+  await contribDesk.setCommunityPool(poolAddress)
+  console.log('Linked CommunityPool and ContributionDesk')
+
   const waitBlocks = Number(process.env.VERIFY_WAIT_BLOCKS || 2)
   try {
     if (process.env.ETHERSCAN_API_KEY && network.name !== 'hardhat') {
@@ -109,9 +132,13 @@ async function main() {
       const tx1 = elusivToken.deploymentTransaction()
       const tx2 = pass.deploymentTransaction()
       const tx3 = desk.deploymentTransaction()
+      const tx4 = pool.deploymentTransaction()
+      const tx5 = contribDesk.deploymentTransaction()
       if (tx1) await tx1.wait(waitBlocks)
       if (tx2) await tx2.wait(waitBlocks)
       if (tx3) await tx3.wait(waitBlocks)
+      if (tx4) await tx4.wait(waitBlocks)
+      if (tx5) await tx5.wait(waitBlocks)
 
       console.log('Verifying ElusivToken...')
       await run('verify:verify', { address: tokenAddress, constructorArguments: [tokenTreasury] })
@@ -119,6 +146,10 @@ async function main() {
       await run('verify:verify', { address: passAddress, constructorArguments: [nftConfig.maxSupply, nftConfig.mintingEnabled, nftConfig.mintPrice, passTreasury] })
       console.log('Verifying ElusivResearchDesk...')
       await run('verify:verify', { address: deskAddress, constructorArguments: [tokenAddress, researchConfig.requestCost, researchConfig.maxQueryLength] })
+      console.log('Verifying ElusivCommunityPool...')
+      await run('verify:verify', { address: poolAddress, constructorArguments: [tokenAddress] })
+      console.log('Verifying ElusivContributionDesk...')
+      await run('verify:verify', { address: contribDeskAddress, constructorArguments: [tokenAddress, contribConfig.reviewPeriod, contribConfig.minValidators, contribConfig.maxValidators] })
     } else {
       console.log('Skipping verification (ETHERSCAN_API_KEY not set or local network).')
     }
@@ -126,7 +157,6 @@ async function main() {
     console.warn('Verification step failed:', e?.message || e)
   }
 
-  // Write addresses to frontend config
   const root = path.resolve(__dirname, '..', '..')
   const frontendAddressesPath = path.join(root, 'frontend', 'src', 'config', 'addresses.json')
   let existing = {}
@@ -140,7 +170,9 @@ async function main() {
     [String(chainId)]: {
       ElusivToken: tokenAddress,
       ElusivAccessPass: passAddress,
-      ElusivResearchDesk: deskAddress
+      ElusivResearchDesk: deskAddress,
+      ElusivCommunityPool: poolAddress,
+      ElusivContributionDesk: contribDeskAddress
     }
   }
   fs.writeFileSync(frontendAddressesPath, JSON.stringify(updated, null, 2))

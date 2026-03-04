@@ -39,6 +39,13 @@ function getResearchConfig() {
   return { requestCost: ethers.parseUnits(costTokens, 18), maxQueryLength: Number(maxQueryLenEnv) || 512 }
 }
 
+function getContributionDeskConfig() {
+  const reviewPeriod = process.env.REVIEW_PERIOD || '604800'
+  const minValidators = process.env.MIN_VALIDATORS || '3'
+  const maxValidators = process.env.MAX_VALIDATORS || '5'
+  return { reviewPeriod, minValidators, maxValidators }
+}
+
 function getAffiliateConfig() {
   const maxAffiliateFeeBps = Number(process.env.AFFILIATE_MAX_FEE_BPS || 1000)
   const defaultAffiliateFeeBps = Number(process.env.AFFILIATE_DEFAULT_FEE_BPS || maxAffiliateFeeBps)
@@ -205,31 +212,73 @@ async function main() {
   const deskAddress = dryRun ? '(dry-run)' : await desk.getAddress()
   console.log(`[${now()}] ElusivResearchDesk: ${deskAddress}${dryRun ? '' : ` (tx: ${deskReceipt.hash})`}`)
 
-  // Sanity check: code present
+  const contribConfig = getContributionDeskConfig()
+  const tokenAddressForPool = dryRun ? wallet.address : tokenAddress
+  const Pool = await ethers.getContractFactory('ElusivCommunityPool', wallet)
+  const poolDeployTx = await Pool.getDeployTransaction(tokenAddressForPool)
+  const poolEst = await provider.estimateGas({ from: wallet.address, data: poolDeployTx.data })
+  if (dryRun) {
+    const ov = commonOverrides(poolEst)
+    const feePerGas = ov.maxFeePerGas || ov.gasPrice
+    const fee = feePerGas ? Number(ethers.formatEther(feePerGas * poolEst)) : undefined
+    console.log(`[${now()}] DRY RUN - ElusivCommunityPool would deploy with gasLimit=${poolEst} feePerGas=${feePerGas?.toString() || 'n/a'} estFeeETH=${fee ?? 'n/a'}`)
+  }
+  const pool = dryRun ? null : await Pool.deploy(tokenAddressForPool, commonOverrides(poolEst))
+  const poolReceipt = dryRun ? null : await pool.deploymentTransaction().wait(confirmations)
+  const poolAddress = dryRun ? '(dry-run)' : await pool.getAddress()
+  console.log(`[${now()}] ElusivCommunityPool: ${poolAddress}${dryRun ? '' : ` (tx: ${poolReceipt.hash})`}`)
+
+  const ContribDesk = await ethers.getContractFactory('ElusivContributionDesk', wallet)
+  const contribDeskDeployTx = await ContribDesk.getDeployTransaction(tokenAddressForPool, contribConfig.reviewPeriod, contribConfig.minValidators, contribConfig.maxValidators)
+  const contribDeskEst = await provider.estimateGas({ from: wallet.address, data: contribDeskDeployTx.data })
+  if (dryRun) {
+    const ov = commonOverrides(contribDeskEst)
+    const feePerGas = ov.maxFeePerGas || ov.gasPrice
+    const fee = feePerGas ? Number(ethers.formatEther(feePerGas * contribDeskEst)) : undefined
+    console.log(`[${now()}] DRY RUN - ElusivContributionDesk would deploy with gasLimit=${contribDeskEst} feePerGas=${feePerGas?.toString() || 'n/a'} estFeeETH=${fee ?? 'n/a'}`)
+  }
+  const contribDesk = dryRun ? null : await ContribDesk.deploy(tokenAddressForPool, contribConfig.reviewPeriod, contribConfig.minValidators, contribConfig.maxValidators, commonOverrides(contribDeskEst))
+  const contribDeskReceipt = dryRun ? null : await contribDesk.deploymentTransaction().wait(confirmations)
+  const contribDeskAddress = dryRun ? '(dry-run)' : await contribDesk.getAddress()
+  console.log(`[${now()}] ElusivContributionDesk: ${contribDeskAddress}${dryRun ? '' : ` (tx: ${contribDeskReceipt.hash})`}`)
+
+  if (!dryRun) {
+    const setDeskEst = await pool.setContributionDesk.estimateGas(contribDeskAddress)
+    const setDeskTx = await pool.setContributionDesk(contribDeskAddress, commonOverrides(setDeskEst))
+    await setDeskTx.wait(confirmations)
+    console.log(`[${now()}] Pool.setContributionDesk (tx: ${setDeskTx.hash})`)
+    const setPoolEst = await contribDesk.setCommunityPool.estimateGas(poolAddress)
+    const setPoolTx = await contribDesk.setCommunityPool(poolAddress, commonOverrides(setPoolEst))
+    await setPoolTx.wait(confirmations)
+    console.log(`[${now()}] ContributionDesk.setCommunityPool (tx: ${setPoolTx.hash})`)
+  }
+
   if (!dryRun) {
     const tokenCode = await provider.getCode(tokenAddress)
     const passCode = await provider.getCode(passAddress)
     const deskCode = await provider.getCode(deskAddress)
-    if (!tokenCode || tokenCode === '0x' || !passCode || passCode === '0x' || !deskCode || deskCode === '0x') {
+    const poolCode = await provider.getCode(poolAddress)
+    const contribDeskCode = await provider.getCode(contribDeskAddress)
+    if (!tokenCode || tokenCode === '0x' || !passCode || passCode === '0x' || !deskCode || deskCode === '0x' || !poolCode || poolCode === '0x' || !contribDeskCode || contribDeskCode === '0x') {
       console.error('Deployed contract code not found. Aborting writes.')
       process.exit(1)
     }
   }
 
-  // Write per-chain deployments file
   if (!dryRun) {
     const prev = readJson(chainFile) || {}
     const record = {
       ...prev,
       ElusivToken: { address: tokenAddress, txHash: tokenReceipt.hash, blockNumber: tokenReceipt.blockNumber, deployedAt: now() },
       ElusivAccessPass: { address: passAddress, txHash: passReceipt.hash, blockNumber: passReceipt.blockNumber, deployedAt: now() },
-      ElusivResearchDesk: { address: deskAddress, txHash: deskReceipt.hash, blockNumber: deskReceipt.blockNumber, deployedAt: now() }
+      ElusivResearchDesk: { address: deskAddress, txHash: deskReceipt.hash, blockNumber: deskReceipt.blockNumber, deployedAt: now() },
+      ElusivCommunityPool: { address: poolAddress, txHash: poolReceipt.hash, blockNumber: poolReceipt.blockNumber, deployedAt: now() },
+      ElusivContributionDesk: { address: contribDeskAddress, txHash: contribDeskReceipt.hash, blockNumber: contribDeskReceipt.blockNumber, deployedAt: now() }
     }
     writeJson(chainFile, record)
     console.log(`[${now()}] Wrote deployments: ${chainFile}`)
   }
 
-  // Update frontend addresses.json
   const root = path.resolve(__dirname, '..', '..')
   const frontendAddressesPath = path.join(root, 'frontend', 'src', 'config', 'addresses.json')
   const frontendDir = path.dirname(frontendAddressesPath)
@@ -242,7 +291,9 @@ async function main() {
         [String(chainId)]: {
           ElusivToken: tokenAddress,
           ElusivAccessPass: passAddress,
-          ElusivResearchDesk: deskAddress
+          ElusivResearchDesk: deskAddress,
+          ElusivCommunityPool: poolAddress,
+          ElusivContributionDesk: contribDeskAddress
         }
       }
       writeJson(frontendAddressesPath, updated)

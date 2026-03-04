@@ -17,6 +17,13 @@ function getResearchConfig() {
   return { requestCost: ethers.parseUnits(costTokens, 18), maxQueryLength: Number(maxQueryLenEnv) || 512 }
 }
 
+function getContributionDeskConfig() {
+  const reviewPeriod = process.env.REVIEW_PERIOD || '604800'
+  const minValidators = process.env.MIN_VALIDATORS || '3'
+  const maxValidators = process.env.MAX_VALIDATORS || '5'
+  return { reviewPeriod, minValidators, maxValidators }
+}
+
 function getAffiliateConfig() {
   const maxAffiliateFeeBps = Number(process.env.AFFILIATE_MAX_FEE_BPS || 1000)
   const defaultAffiliateFeeBps = Number(process.env.AFFILIATE_DEFAULT_FEE_BPS || maxAffiliateFeeBps)
@@ -86,7 +93,26 @@ async function main() {
   const Desk = await ethers.getContractFactory('ElusivResearchDesk')
   const desk = await Desk.deploy(await elusivToken.getAddress(), researchConfig.requestCost, researchConfig.maxQueryLength)
   await desk.waitForDeployment()
-  console.log('ElusivResearchDesk:', await desk.getAddress())
+  const deskAddress = await desk.getAddress()
+  console.log('ElusivResearchDesk:', deskAddress)
+
+  const tokenAddress = await elusivToken.getAddress()
+  const Pool = await ethers.getContractFactory('ElusivCommunityPool')
+  const pool = await Pool.deploy(tokenAddress)
+  await pool.waitForDeployment()
+  const poolAddress = await pool.getAddress()
+  console.log('ElusivCommunityPool:', poolAddress)
+
+  const contribConfig = getContributionDeskConfig()
+  const ContribDesk = await ethers.getContractFactory('ElusivContributionDesk')
+  const contribDesk = await ContribDesk.deploy(tokenAddress, contribConfig.reviewPeriod, contribConfig.minValidators, contribConfig.maxValidators)
+  await contribDesk.waitForDeployment()
+  const contribDeskAddress = await contribDesk.getAddress()
+  console.log('ElusivContributionDesk:', contribDeskAddress)
+
+  await pool.setContributionDesk(contribDeskAddress)
+  await contribDesk.setCommunityPool(poolAddress)
+  console.log('Linked CommunityPool and ContributionDesk')
 }
 
 main().catch((e) => { console.error(e); process.exit(1); })

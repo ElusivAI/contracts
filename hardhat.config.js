@@ -1,6 +1,8 @@
 require('@nomicfoundation/hardhat-toolbox');
 require('solidity-coverage');
-require('dotenv').config({ path: require('path').resolve(__dirname, '..', '.env') });
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+require('dotenv').config({ path: path.resolve(__dirname, '..', '.env'), override: false });
 
 const { HARDHAT_SEPOLIA_RPC_URL, HARDHAT_PRIVATE_KEY, ETHERSCAN_API_KEY } = process.env;
 

@@ -14,17 +14,21 @@ contract ElusivCommunityPool is Ownable, ReentrancyGuard {
 
   IERC20 public immutable elusivToken;
   address public contributionDesk;
+  uint256 public reservedBalance;
 
   event Deposit(address indexed depositor, uint256 amount);
   event Withdrawal(address indexed to, uint256 amount, address indexed executor);
   event EmergencyWithdrawal(address indexed token, address indexed to, uint256 amount, address indexed executor);
   event ContributionDeskUpdated(address indexed newDesk);
+  event ReservedBalanceUpdated(uint256 amount);
 
   error InvalidAddress();
   error NotAuthorized();
   error InsufficientBalance();
   error InvalidAmount();
   error ContributionDeskNotSet();
+  error ExceedsReserved();
+  error ReservedUnderflow();
 
   /// @notice Initializes the community pool.
   /// @param tokenAddress The ELUSIV token contract address.
@@ -49,6 +53,28 @@ contract ElusivCommunityPool is Ownable, ReentrancyGuard {
     emit Deposit(msg.sender, amount);
   }
 
+  modifier onlyContributionDesk() {
+    if (msg.sender != contributionDesk) revert NotAuthorized();
+    _;
+  }
+
+  /// @notice Increase reserved balance (outstanding reward obligations). Only the contribution desk may call.
+  /// @param amount The amount to add to reserved.
+  function increaseReserved(uint256 amount) external onlyContributionDesk {
+    if (amount == 0) revert InvalidAmount();
+    reservedBalance += amount;
+    emit ReservedBalanceUpdated(reservedBalance);
+  }
+
+  /// @notice Decrease reserved balance when a reward is paid out. Only the contribution desk may call.
+  /// @param amount The amount to subtract from reserved.
+  function decreaseReserved(uint256 amount) external onlyContributionDesk {
+    if (amount == 0) revert InvalidAmount();
+    if (amount > reservedBalance) revert ReservedUnderflow();
+    reservedBalance -= amount;
+    emit ReservedBalanceUpdated(reservedBalance);
+  }
+
   /// @notice Withdraw tokens from the pool (authorized addresses only).
   /// @param to The recipient address.
   /// @param amount The amount of tokens to withdraw.
@@ -62,6 +88,7 @@ contract ElusivCommunityPool is Ownable, ReentrancyGuard {
 
     uint256 balance = elusivToken.balanceOf(address(this));
     if (balance < amount) revert InsufficientBalance();
+    if (msg.sender == owner() && balance - amount < reservedBalance) revert ExceedsReserved();
 
     elusivToken.safeTransfer(to, amount);
     emit Withdrawal(to, amount, msg.sender);

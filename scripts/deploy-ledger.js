@@ -33,6 +33,13 @@ function getResearchConfig() {
   return { requestCost: ethers.parseUnits(costTokens, 18), maxQueryLength: Number(maxQueryLenEnv) || 512 }
 }
 
+function getContributionDeskConfig() {
+  const reviewPeriod = process.env.REVIEW_PERIOD || '604800'
+  const minValidators = process.env.MIN_VALIDATORS || '3'
+  const maxValidators = process.env.MAX_VALIDATORS || '5'
+  return { reviewPeriod, minValidators, maxValidators }
+}
+
 function getAffiliateConfig() {
   const maxAffiliateFeeBps = Number(process.env.AFFILIATE_MAX_FEE_BPS || 1000)
   const defaultAffiliateFeeBps = Number(process.env.AFFILIATE_DEFAULT_FEE_BPS || maxAffiliateFeeBps)
@@ -178,13 +185,47 @@ async function main() {
   const deskAddress = dryRun ? '(dry-run)' : deskReceipt.contractAddress
   console.log('ElusivResearchDesk:', deskAddress)
 
-  // Optional verification
+  const tokenAddressForPool = dryRun ? from : tokenAddress
+  const PoolFactory = await ethers.getContractFactory('ElusivCommunityPool')
+  const poolDeployTx = await PoolFactory.getDeployTransaction(tokenAddressForPool)
+  if (dryRun) {
+    const est = await provider.estimateGas({ from, to: undefined, data: poolDeployTx.data })
+    console.log('DRY RUN - ElusivCommunityPool would deploy with gasLimit:', est.toString())
+  }
+  const poolReceipt = dryRun ? null : await signAndSendCreationTx({ provider, eth, from, data: poolDeployTx.data, chainId, confirmations })
+  const poolAddress = dryRun ? '(dry-run)' : poolReceipt.contractAddress
+  console.log('ElusivCommunityPool:', poolAddress)
+
+  const contribConfig = getContributionDeskConfig()
+  const ContribDeskFactory = await ethers.getContractFactory('ElusivContributionDesk')
+  const contribDeskDeployTx = await ContribDeskFactory.getDeployTransaction(tokenAddressForPool, contribConfig.reviewPeriod, contribConfig.minValidators, contribConfig.maxValidators)
+  if (dryRun) {
+    const est = await provider.estimateGas({ from, to: undefined, data: contribDeskDeployTx.data })
+    console.log('DRY RUN - ElusivContributionDesk would deploy with gasLimit:', est.toString())
+  }
+  const contribDeskReceipt = dryRun ? null : await signAndSendCreationTx({ provider, eth, from, data: contribDeskDeployTx.data, chainId, confirmations })
+  const contribDeskAddress = dryRun ? '(dry-run)' : contribDeskReceipt.contractAddress
+  console.log('ElusivContributionDesk:', contribDeskAddress)
+
+  if (!dryRun) {
+    const poolInterface = PoolFactory.interface
+    const setDeskData = poolInterface.encodeFunctionData('setContributionDesk', [contribDeskAddress])
+    const setDeskReceipt = await signAndSendTx({ provider, eth, from, to: poolAddress, data: setDeskData, chainId, confirmations })
+    console.log('Pool.setContributionDesk tx:', setDeskReceipt.hash)
+    const contribDeskInterface = ContribDeskFactory.interface
+    const setPoolData = contribDeskInterface.encodeFunctionData('setCommunityPool', [poolAddress])
+    const setPoolReceipt = await signAndSendTx({ provider, eth, from, to: contribDeskAddress, data: setPoolData, chainId, confirmations })
+    console.log('ContributionDesk.setCommunityPool tx:', setPoolReceipt.hash)
+  }
+
   try {
     if (process.env.ETHERSCAN_API_KEY && !dryRun) {
       console.log('Verifying on Etherscan...')
       await run('verify:verify', { address: tokenAddress, constructorArguments: [tokenTreasury] })
       await run('verify:verify', { address: passAddress, constructorArguments: [nftConfig.maxSupply, nftConfig.mintingEnabled, nftConfig.mintPrice, passTreasury] })
       await run('verify:verify', { address: deskAddress, constructorArguments: [tokenAddress, researchConfig.requestCost, researchConfig.maxQueryLength] })
+      await run('verify:verify', { address: poolAddress, constructorArguments: [tokenAddress] })
+      await run('verify:verify', { address: contribDeskAddress, constructorArguments: [tokenAddress, contribConfig.reviewPeriod, contribConfig.minValidators, contribConfig.maxValidators] })
     } else {
       console.log('Skipping Etherscan verification (dry run or ETHERSCAN_API_KEY not set).')
     }
@@ -192,7 +233,6 @@ async function main() {
     console.warn('Verification failed or skipped:', e?.message || e)
   }
 
-  // Write addresses to frontend config
   const root = path.resolve(__dirname, '..', '..')
   const frontendAddressesPath = path.join(root, 'frontend', 'src', 'config', 'addresses.json')
   if (!dryRun) {
@@ -203,7 +243,9 @@ async function main() {
       [String(chainId)]: {
         ElusivToken: tokenAddress,
         ElusivAccessPass: passAddress,
-        ElusivResearchDesk: deskAddress
+        ElusivResearchDesk: deskAddress,
+        ElusivCommunityPool: poolAddress,
+        ElusivContributionDesk: contribDeskAddress
       }
     }
     fs.writeFileSync(frontendAddressesPath, JSON.stringify(updated, null, 2))

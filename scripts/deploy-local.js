@@ -86,6 +86,52 @@ async function main() {
   console.log(`   💰 Request Cost: ${requestCost} ELUSIV`)
   console.log(`   📏 Max Query Length: ${maxQueryLength} bytes`)
 
+  // Deploy ElusivCommunityPool
+  console.log('\n📦 Deploying ElusivCommunityPool...')
+  const Pool = await ethers.getContractFactory('ElusivCommunityPool')
+  const pool = await Pool.deploy(tokenAddress)
+  await pool.waitForDeployment()
+  const poolAddress = await pool.getAddress()
+  console.log(`   ✅ ElusivCommunityPool: ${poolAddress}`)
+
+  // Deploy ElusivContributionDesk
+  const reviewPeriod = process.env.REVIEW_PERIOD || '604800'
+  const minValidators = process.env.MIN_VALIDATORS || '3'
+  const maxValidators = process.env.MAX_VALIDATORS || '5'
+  console.log('\n📦 Deploying ElusivContributionDesk...')
+  const ContribDesk = await ethers.getContractFactory('ElusivContributionDesk')
+  const contribDesk = await ContribDesk.deploy(
+    tokenAddress,
+    reviewPeriod,
+    minValidators,
+    maxValidators
+  )
+  await contribDesk.waitForDeployment()
+  const contribDeskAddress = await contribDesk.getAddress()
+  console.log(`   ✅ ElusivContributionDesk: ${contribDeskAddress}`)
+  console.log(`   📅 Review Period: ${reviewPeriod} sec (7 days default)`)
+  console.log(`   👥 Min/Max Validators: ${minValidators}/${maxValidators}`)
+
+  await pool.setContributionDesk(contribDeskAddress)
+  await contribDesk.setCommunityPool(poolAddress)
+  console.log(`   ✅ Linked CommunityPool ↔ ContributionDesk`)
+
+  const signers = await ethers.getSigners()
+  const minNeeded = 3
+  const validatorCount = Math.min(5, Math.max(minNeeded, signers.length - 2))
+  if (signers.length < minNeeded + 2) {
+    throw new Error(`Need at least ${minNeeded + 2} signers for ContributionDesk validators (have ${signers.length}). Hardhat node provides 20 by default.`)
+  }
+  for (let i = 2; i < 2 + validatorCount; i++) {
+    await contribDesk.addValidator(signers[i].address)
+  }
+  console.log(`   ✅ Added ${validatorCount} validators (signers[2]–[${1 + validatorCount}])`)
+
+  const poolFundAmount = process.env.POOL_FUND_ELUSIV || '100000'
+  const fundTx = await elusivToken.transfer(poolAddress, ethers.parseEther(poolFundAmount))
+  await fundTx.wait()
+  console.log(`   ✅ Funded CommunityPool with ${poolFundAmount} ELUSIV`)
+
   // Update frontend addresses.json
   console.log('\n📝 Updating frontend addresses...')
   const root = path.resolve(__dirname, '..', '..')
@@ -103,7 +149,9 @@ async function main() {
   addresses['31337'] = {
     ElusivToken: tokenAddress,
     ElusivAccessPass: passAddress,
-    ElusivResearchDesk: deskAddress
+    ElusivResearchDesk: deskAddress,
+    ElusivContributionDesk: contribDeskAddress,
+    ElusivCommunityPool: poolAddress
   }
 
   fs.writeFileSync(addressesPath, JSON.stringify(addresses, null, 2))
@@ -138,6 +186,17 @@ async function main() {
         requestCost,
         maxQueryLength,
         deployedAt: new Date().toISOString()
+      },
+      ElusivCommunityPool: {
+        address: poolAddress,
+        deployedAt: new Date().toISOString()
+      },
+      ElusivContributionDesk: {
+        address: contribDeskAddress,
+        reviewPeriod,
+        minValidators,
+        maxValidators,
+        deployedAt: new Date().toISOString()
       }
     },
     seedAccount: {
@@ -156,9 +215,11 @@ async function main() {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
   console.log(`Chain ID: 31337 (Hardhat Local)`)
   console.log(`\nContracts:`)
-  console.log(`  ElusivToken:        ${tokenAddress}`)
-  console.log(`  ElusivAccessPass:   ${passAddress}`)
-  console.log(`  ElusivResearchDesk: ${deskAddress}`)
+  console.log(`  ElusivToken:            ${tokenAddress}`)
+  console.log(`  ElusivAccessPass:      ${passAddress}`)
+  console.log(`  ElusivResearchDesk:     ${deskAddress}`)
+  console.log(`  ElusivCommunityPool:    ${poolAddress}`)
+  console.log(`  ElusivContributionDesk: ${contribDeskAddress}`)
   console.log(`\nTest Account: ${seedTo}`)
   console.log(`  ✅ Has 10,000 ELUSIV tokens`)
   if (!process.env.SKIP_SEED_MINT) {
@@ -166,9 +227,12 @@ async function main() {
   } else {
     console.log(`  ⏭️  No NFT (seed mint skipped for fresh start)`)
   }
+  console.log(`\nValidators: signers[2]–[${1 + validatorCount}] (for ContributionDesk)`)
   console.log('\n📋 Next Steps:')
   console.log('  1. Update api/.env with:')
   console.log(`     ACCESS_PASS_CONTRACT=${passAddress}`)
+  console.log(`     RESEARCH_DESK_CONTRACT=${deskAddress}`)
+  console.log(`     CONTRIBUTION_DESK_CONTRACT=${contribDeskAddress}`)
   console.log(`     RPC_URL=http://127.0.0.1:8545`)
   console.log(`     CHAIN_ID=31337`)
   console.log('  2. Start backend API: cd api && npm start')

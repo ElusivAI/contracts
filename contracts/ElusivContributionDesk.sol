@@ -8,6 +8,8 @@ import '@openzeppelin/contracts/utils/ReentrancyGuard.sol';
 
 interface ICommunityPool {
   function withdraw(address to, uint256 amount) external;
+  function increaseReserved(uint256 amount) external;
+  function decreaseReserved(uint256 amount) external;
 }
 
 /// @title Elusiv Contribution Desk
@@ -218,7 +220,11 @@ contract ElusivContributionDesk is Ownable, ReentrancyGuard {
 
     emit ValidatorVoted(contributionId, msg.sender, approve);
 
-    if (block.timestamp >= contrib.reviewDeadline) {
+    address[] memory assigned = _contributionValidators[contributionId];
+    uint256 votedCount = contrib.approvalCount + contrib.rejectionCount;
+    bool allVoted = assigned.length > 0 && votedCount >= assigned.length;
+    bool unanimousApproval = allVoted && contrib.approvalCount >= minValidatorsRequired;
+    if (unanimousApproval || block.timestamp >= contrib.reviewDeadline) {
       _checkAndFinalize(contributionId);
     }
   }
@@ -236,6 +242,31 @@ contract ElusivContributionDesk is Ownable, ReentrancyGuard {
     }
 
     _checkAndFinalize(contributionId);
+  }
+
+  /// @notice Owner escape hatch: force-finalize a contribution (e.g. when validators are reassigned or unavailable).
+  /// @param contributionId The ID of the contribution.
+  /// @param approved True to approve and process rewards, false to reject.
+  function forceFinalize(uint256 contributionId, bool approved) external onlyOwner nonReentrant {
+    IndependentContribution storage contrib = _getContribution(contributionId);
+    if (contrib.status != ContributionStatus.UnderReview) {
+      revert ContributionNotUnderReview();
+    }
+
+    contrib.status = approved ? ContributionStatus.Approved : ContributionStatus.Rejected;
+    if (approved && contrib.rewardAmount > 0 && communityPool != address(0)) {
+      ICommunityPool pool = ICommunityPool(communityPool);
+      pool.increaseReserved(contrib.rewardAmount);
+      uint256 poolBalance = elusivToken.balanceOf(communityPool);
+      if (poolBalance >= contrib.rewardAmount) {
+        _rewardClaimed[contributionId] = true;
+        contributorStats[contrib.contributor] += contrib.rewardAmount;
+        pool.decreaseReserved(contrib.rewardAmount);
+        pool.withdraw(contrib.contributor, contrib.rewardAmount);
+        emit RewardDistributed(contributionId, contrib.contributor, contrib.rewardAmount);
+      }
+    }
+    emit ContributionFinalized(contributionId, approved, contrib.rewardAmount);
   }
 
   /// @notice Add a validator to the system.
@@ -263,6 +294,7 @@ contract ElusivContributionDesk is Ownable, ReentrancyGuard {
   /// @param min The new minimum validators required.
   function setMinValidatorsRequired(uint256 min) external onlyOwner {
     require(min > 0, 'Min must be > 0');
+    require(min <= maxValidators, 'Min exceeds max validators');
     require(min <= _validatorList.length, 'Min exceeds validator count');
     minValidatorsRequired = min;
     emit MinValidatorsUpdated(min);
@@ -314,7 +346,9 @@ contract ElusivContributionDesk is Ownable, ReentrancyGuard {
 
     _rewardClaimed[contributionId] = true;
     contributorStats[contrib.contributor] += contrib.rewardAmount;
-    ICommunityPool(communityPool).withdraw(contrib.contributor, contrib.rewardAmount);
+    ICommunityPool pool = ICommunityPool(communityPool);
+    pool.decreaseReserved(contrib.rewardAmount);
+    pool.withdraw(contrib.contributor, contrib.rewardAmount);
     emit RewardDistributed(contributionId, contrib.contributor, contrib.rewardAmount);
   }
 
@@ -475,11 +509,14 @@ contract ElusivContributionDesk is Ownable, ReentrancyGuard {
     if (approved) {
       contrib.status = ContributionStatus.Approved;
       if (contrib.rewardAmount > 0 && communityPool != address(0)) {
+        ICommunityPool pool = ICommunityPool(communityPool);
+        pool.increaseReserved(contrib.rewardAmount);
         uint256 poolBalance = elusivToken.balanceOf(communityPool);
         if (poolBalance >= contrib.rewardAmount) {
           _rewardClaimed[contributionId] = true;
           contributorStats[contrib.contributor] += contrib.rewardAmount;
-          ICommunityPool(communityPool).withdraw(contrib.contributor, contrib.rewardAmount);
+          pool.decreaseReserved(contrib.rewardAmount);
+          pool.withdraw(contrib.contributor, contrib.rewardAmount);
           emit RewardDistributed(contributionId, contrib.contributor, contrib.rewardAmount);
         }
       }

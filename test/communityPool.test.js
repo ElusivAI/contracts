@@ -80,15 +80,12 @@ describe('ElusivCommunityPool', function () {
         500n * decimalsMultiplier
       )
 
-      await desk.connect(owner).validatorVote(0, true)
-      await desk.connect(contributor).validatorVote(0, true)
-      await desk.connect(other).validatorVote(0, true)
-
       const balanceBefore = await token.balanceOf(contributor.address)
-      await ethers.provider.send('evm_increaseTime', [7 * 24 * 60 * 60 + 1])
-      await ethers.provider.send('evm_mine', [])
-
-      await expect(desk.finalizeContribution(0))
+      await expect(desk.connect(owner).validatorVote(0, true))
+        .to.not.emit(pool, 'Withdrawal')
+      await expect(desk.connect(contributor).validatorVote(0, true))
+        .to.not.emit(pool, 'Withdrawal')
+      await expect(desk.connect(other).validatorVote(0, true))
         .to.emit(pool, 'Withdrawal')
         .withArgs(contributor.address, 500n * decimalsMultiplier, await desk.getAddress())
 
@@ -98,12 +95,13 @@ describe('ElusivCommunityPool', function () {
 
     it('should allow owner to withdraw', async function () {
       const balanceBefore = await token.balanceOf(other.address)
-      
+      const poolBalanceBefore = await pool.getBalance()
+
       await expect(pool.connect(owner).withdraw(other.address, 300n * decimalsMultiplier))
         .to.emit(pool, 'Withdrawal')
         .withArgs(other.address, 300n * decimalsMultiplier, owner.address)
 
-      expect(await pool.getBalance()).to.equal(700n * decimalsMultiplier)
+      expect(await pool.getBalance()).to.equal(poolBalanceBefore - 300n * decimalsMultiplier)
       expect(await token.balanceOf(other.address) - balanceBefore).to.equal(300n * decimalsMultiplier)
     })
 
@@ -125,6 +123,29 @@ describe('ElusivCommunityPool', function () {
     it('should reject withdrawal exceeding balance', async function () {
       await expect(pool.connect(owner).withdraw(contributor.address, 2000n * decimalsMultiplier))
         .to.be.revertedWithCustomError(pool, 'InsufficientBalance')
+    })
+
+    it('should reject owner withdraw that would dip below reserved balance', async function () {
+      const poolBal = await pool.getBalance()
+      if (poolBal > 0n) await pool.connect(owner).withdraw(owner.address, poolBal)
+      await desk.setCommunityPool(await pool.getAddress())
+      await desk.addValidator(owner.address)
+      await desk.addValidator(contributor.address)
+      await desk.addValidator(other.address)
+      await desk.connect(contributor).submitContribution(
+        'Reserved',
+        '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+        'Desc',
+        400n * decimalsMultiplier
+      )
+      await desk.connect(owner).forceFinalize(0, true)
+      expect(await pool.reservedBalance()).to.equal(400n * decimalsMultiplier)
+      await token.transfer(await pool.getAddress(), 500n * decimalsMultiplier)
+      await expect(pool.connect(owner).withdraw(other.address, 200n * decimalsMultiplier))
+        .to.be.revertedWithCustomError(pool, 'ExceedsReserved')
+      await expect(pool.connect(owner).withdraw(other.address, 100n * decimalsMultiplier))
+        .to.emit(pool, 'Withdrawal')
+      expect(await pool.getBalance()).to.equal(400n * decimalsMultiplier)
     })
 
     it('should prevent withdrawal if contribution desk not set', async function () {
@@ -179,25 +200,21 @@ describe('ElusivCommunityPool', function () {
     })
 
     it('should allow owner to emergency withdraw ETH', async function () {
-      const ethAmount = ethers.parseEther('0.5')
+      const ethAmount = ethers.parseEther('1')
       const poolAddress = await pool.getAddress()
-      const balanceBefore = await ethers.provider.getBalance(other.address)
-
-      const ForceSendEth = await ethers.getContractFactory('ForceSendEth')
-      const forceSend = await ForceSendEth.deploy()
-      await forceSend.waitForDeployment()
-      await forceSend.destroy(poolAddress, { value: ethAmount })
-
+      const funderFactory = await ethers.getContractFactory('CommunityPoolEthFunder')
+      const funder = await funderFactory.deploy()
+      await funder.waitForDeployment()
+      await funder.fund(poolAddress, { value: ethAmount })
       expect(await ethers.provider.getBalance(poolAddress)).to.equal(ethAmount)
 
-      await expect(
-        pool.connect(owner).emergencyWithdraw(ethers.ZeroAddress, other.address, ethAmount)
-      )
+      const balanceBefore = await ethers.provider.getBalance(other.address)
+      await expect(pool.connect(owner).emergencyWithdraw(ethers.ZeroAddress, other.address, ethAmount))
         .to.emit(pool, 'EmergencyWithdrawal')
         .withArgs(ethers.ZeroAddress, other.address, ethAmount, owner.address)
 
-      expect(await ethers.provider.getBalance(poolAddress)).to.equal(0)
-      expect((await ethers.provider.getBalance(other.address)) - balanceBefore).to.equal(ethAmount)
+      expect(await ethers.provider.getBalance(poolAddress)).to.equal(0n)
+      expect(await ethers.provider.getBalance(other.address)).to.equal(balanceBefore + ethAmount)
     })
 
     it('should prevent non-owner from emergency withdrawal', async function () {
